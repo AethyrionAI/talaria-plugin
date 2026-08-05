@@ -1,0 +1,10 @@
+name: talaria
+version: 0.1.0
+description: >
+  Talaria phone bridge for Hermes — Phase 1: the phone-query tool surface
+  (gated off until a live transport exists) and the pairing/admin CLI
+  (hermes talaria pair|status|unpair). Later phases add the webhook-mode
+  platform adapter on the gateway's existing HTTP listener and retire the
+  legacy relay/connector sidecars.
+author: AethyrionAI
+kind: standalone
