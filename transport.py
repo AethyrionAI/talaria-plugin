@@ -79,16 +79,29 @@ class TransportHub:
         self._queries.setdefault(device_id, []).append(
             {"id": query_id, "kind": kind, "params": params or {}}
         )
-        self._futures[query_id] = future
+        # Owner travels with the future so resolve_query can refuse a
+        # different device's attempt to answer this query (fabricated
+        # data injection) — see resolve_query's device_id check.
+        self._futures[query_id] = (device_id, future)
         self.wake(device_id)
         return query_id, future
 
     def take_queries(self, device_id: str) -> list[dict]:
         return self._queries.pop(device_id, [])
 
-    def resolve_query(self, query_id: str, result: dict | None = None, error: str | None = None) -> bool:
-        future = self._futures.pop(query_id, None)
-        if future is None or future.done():
+    def resolve_query(self, query_id: str, result: dict | None = None, error: str | None = None,
+                       device_id: str | None = None) -> bool:
+        entry = self._futures.get(query_id)
+        if entry is None:
+            return False
+        owner, future = entry
+        if device_id != owner:
+            # Wrong device claiming to answer someone else's query: refuse
+            # WITHOUT popping or resolving, so the rightful owner can still
+            # resolve it afterward.
+            return False
+        self._futures.pop(query_id, None)
+        if future.done():
             return False
         future.set_result({"error": error} if error is not None else (result or {}))
         return True

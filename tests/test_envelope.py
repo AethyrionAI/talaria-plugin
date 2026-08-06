@@ -200,3 +200,53 @@ async def test_query_result_non_string_query_id_is_clean_error(env):
         "device_id": paired["device_id"], "query_id": [1, 2], "result": {},
     })
     assert result == {"ok": False}
+
+
+# -- coordinator round: utf-8 constant-time compares + query ownership -----
+
+def test_verify_non_ascii_bearer_returns_clean_failure_without_raising(env):
+    service, _ = env
+    ok, code = service.verify("Bearer héllo")
+    assert ok is False
+    assert code == "invalid_talaria_auth"
+
+
+def test_verify_with_non_ascii_configured_key_does_not_raise(env):
+    _, hub = env
+    non_ascii_service = EnvelopeService(
+        api_key_provider=lambda: "kéy-not-ascii",
+        hub=hub, store_mod=store, outbox_mod=outbox,
+        hold_seconds=0.05, touch_throttle_seconds=0.0,
+    )
+    ok, code = non_ascii_service.verify(f"Bearer {API_KEY}")
+    assert ok is False
+    assert code == "invalid_talaria_auth"
+
+
+async def test_pair_non_ascii_auth_is_clean_error(env):
+    service, _ = env
+    result = await service.dispatch({
+        "type": "pair", "auth": "héllo", "install_id": "i-1", "device_name": "p",
+    })
+    assert result["code"] == "pair_requires_api_key"
+
+
+async def test_query_result_wrong_device_cannot_answer_anothers_query(env):
+    service, hub = env
+    owner = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-1", "device_name": "p"})
+    other = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-2", "device_name": "q"})
+    qid, future = hub.enqueue_query(owner["device_id"], "location", {})
+
+    spoofed = await service.dispatch({
+        "type": "query_result", "auth": other["device_token"],
+        "device_id": other["device_id"], "query_id": qid, "result": {"text": "spoofed"},
+    })
+    assert spoofed == {"ok": False}
+    assert future.done() is False
+
+    resolved = await service.dispatch({
+        "type": "query_result", "auth": owner["device_token"],
+        "device_id": owner["device_id"], "query_id": qid, "result": {"text": "real"},
+    })
+    assert resolved == {"ok": True}
+    assert (await asyncio.wait_for(future, 0.5)) == {"text": "real"}

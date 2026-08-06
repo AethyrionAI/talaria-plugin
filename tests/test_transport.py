@@ -56,16 +56,16 @@ async def test_query_cycle_enqueue_take_resolve():
     taken = hub.take_queries("dev1")
     assert taken == [{"id": qid, "kind": "location", "params": {}}]
     assert hub.take_queries("dev1") == []  # take drains
-    assert hub.resolve_query(qid, result={"text": "here"}) is True
+    assert hub.resolve_query(qid, result={"text": "here"}, device_id="dev1") is True
     assert (await asyncio.wait_for(future, 0.5)) == {"text": "here"}
-    assert hub.resolve_query(qid, result={}) is False  # already resolved
+    assert hub.resolve_query(qid, result={}, device_id="dev1") is False  # already resolved
 
 
 @pytest.mark.asyncio
 async def test_resolve_with_error_resolves_future_with_error_dict():
     hub = TransportHub()
     qid, future = hub.enqueue_query("dev1", "health", {"metric": "steps"})
-    hub.resolve_query(qid, error="permission_denied")
+    hub.resolve_query(qid, error="permission_denied", device_id="dev1")
     assert (await asyncio.wait_for(future, 0.5)) == {"error": "permission_denied"}
 
 
@@ -100,5 +100,18 @@ async def test_overlapping_parks_keep_liveness_until_last_exits():
 async def test_resolve_with_empty_string_error_still_resolves_as_error():
     hub = TransportHub()
     qid, future = hub.enqueue_query("dev1", "health", {})
-    hub.resolve_query(qid, error="")
+    hub.resolve_query(qid, error="", device_id="dev1")
     assert (await asyncio.wait_for(future, 0.5)) == {"error": ""}
+
+
+@pytest.mark.asyncio
+async def test_resolve_query_refuses_wrong_device_then_owner_still_resolves():
+    # Regression: a valid token for device B must not be able to answer
+    # (or discard) a query that was enqueued to device A — that would be
+    # fabricated data injection into A's pending tool call.
+    hub = TransportHub()
+    qid, future = hub.enqueue_query("dev-a", "location", {})
+    assert hub.resolve_query(qid, result={"text": "spoofed"}, device_id="dev-b") is False
+    assert future.done() is False
+    assert hub.resolve_query(qid, result={"text": "real"}, device_id="dev-a") is True
+    assert (await asyncio.wait_for(future, 0.5)) == {"text": "real"}

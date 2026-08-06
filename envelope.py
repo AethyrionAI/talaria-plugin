@@ -23,9 +23,22 @@ import time
 
 
 def _bearer(auth_header: str) -> str:
-    if not (auth_header or "").startswith("Bearer "):
+    if not isinstance(auth_header, str) or not auth_header.startswith("Bearer "):
         return ""
     return auth_header[7:].strip()
+
+
+def _ct_equal(a: str, b: str) -> bool:
+    """Constant-time string compare that never raises on non-ASCII.
+
+    hmac.compare_digest requires both str operands to be ASCII-only —
+    a non-ASCII bearer token or a non-ASCII configured API key raises
+    TypeError on the str/str path, which on the UNAUTHENTICATED verify()
+    surface means a 500 instead of a clean 401 (and a non-ASCII key
+    would make every verify() call raise — total outage). The bytes/
+    bytes path has no such restriction and is still constant-time.
+    """
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
 def _text(value) -> str:
@@ -55,7 +68,7 @@ class EnvelopeService:
         if not token:
             return False, "missing_bearer"
         key = self._api_key() or ""
-        if key and hmac.compare_digest(token, key):
+        if key and _ct_equal(token, key):
             return True, ""
         if self._store.device_for_token(token) is not None:
             return True, ""
@@ -66,14 +79,17 @@ class EnvelopeService:
         if not isinstance(value, str):
             return False
         key = self._api_key() or ""
-        return bool(key) and hmac.compare_digest(value, key)
+        return bool(key) and _ct_equal(value, key)
 
     def _device_authorized(self, payload: dict) -> dict | None:
         auth = payload.get("auth")
         if not isinstance(auth, str):
             return None
         device = self._store.device_for_token(auth)
-        if device is None or device.get("id") != payload.get("device_id"):
+        if device is None:
+            return None
+        device_id = device.get("id")
+        if not device_id or device_id != payload.get("device_id"):
             return None
         return device
 
@@ -107,7 +123,12 @@ class EnvelopeService:
     def _touch(self, device_id: str) -> None:
         self._hub.touch(device_id)
         now = time.monotonic()
-        last = self._last_store_touch.get(device_id, 0.0)
+        # -inf, not 0.0: time.monotonic() is seconds-since-an-arbitrary-
+        # epoch (often boot), so a first drain at t=30s with 0.0 as the
+        # "never touched" sentinel would see 30 - 0 = 30 < throttle and
+        # skip the very first store touch — last_seen would stay None
+        # until t >= throttle. -inf guarantees the first touch always writes.
+        last = self._last_store_touch.get(device_id, float("-inf"))
         if now - last >= self._touch_throttle:
             self._last_store_touch[device_id] = now
             self._store.touch_device(device_id)
@@ -135,13 +156,15 @@ class EnvelopeService:
         return {"acked": self._outbox.mark_delivered(item_ids)}
 
     async def _query_result(self, payload: dict) -> dict:
-        if self._device_authorized(payload) is None:
+        device = self._device_authorized(payload)
+        if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
         query_id = payload.get("query_id")
         resolved = self._hub.resolve_query(
             query_id if isinstance(query_id, str) else "",
             result=payload.get("result"),
             error=payload.get("error"),
+            device_id=device["id"],
         )
         return {"ok": bool(resolved)}
 
