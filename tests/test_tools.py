@@ -84,3 +84,69 @@ async def test_phone_query_error_result_reported_plainly(hub, monkeypatch):
     text = await tools.phone_query({"kind": "health"})
     await denying
     assert "permission" in text.lower()
+
+
+# -- #260(B): the declined prose names the actual blocker -------------------
+
+async def _denied_query(hub, monkeypatch, kind, **detail):
+    monkeypatch.setattr(tools, "_QUERY_TIMEOUT", 1.0)
+    hub.touch("dev1")
+
+    async def deny_soon():
+        await asyncio.sleep(0.02)
+        [q] = hub.take_queries("dev1")
+        hub.resolve_query(q["id"], error="permission_denied",
+                          error_detail=detail or None, device_id="dev1")
+
+    denying = asyncio.create_task(deny_soon())
+    text = await tools.phone_query({"kind": kind})
+    await denying
+    return text
+
+
+async def test_master_denial_names_the_master_switch(hub, monkeypatch):
+    text = await _denied_query(hub, monkeypatch, "health", denied_gate="master")
+    assert text == (
+        'The phone declined: the master "Share Sensors with Hermes" switch is '
+        "off in Talaria's privacy settings. That one switch gates ALL sensor "
+        "sharing — streams and queries alike — so flipping an individual "
+        "sensor toggle will not unblock this."
+    )
+
+
+async def test_stream_denial_names_the_actual_toggle(hub, monkeypatch):
+    # kind=weather but the blocking toggle is LOCATION — the prose must name
+    # the toggle a user can actually flip, exactly the #260(B) defect.
+    text = await _denied_query(hub, monkeypatch, "weather",
+                               denied_gate="stream", denied_stream="location")
+    assert text == (
+        "The phone declined: the Location sensor toggle is off in Talaria's "
+        "privacy settings. The master sensor switch is on, so enabling "
+        "Location is what unblocks this."
+    )
+
+
+async def test_bare_denial_keeps_the_generic_prose(hub, monkeypatch):
+    # Pre-#260 apps send no gate fields — the prose must stay byte-identical
+    # to what shipped, so old app + new plugin degrades to today's behavior.
+    text = await _denied_query(hub, monkeypatch, "health")
+    assert text == (
+        "The phone declined: permission for that data stream is disabled in "
+        "Talaria's privacy settings."
+    )
+
+
+async def test_unknown_gate_value_falls_back_to_generic_prose(hub, monkeypatch):
+    text = await _denied_query(hub, monkeypatch, "health", denied_gate="future_gate")
+    assert text == (
+        "The phone declined: permission for that data stream is disabled in "
+        "Talaria's privacy settings."
+    )
+
+
+async def test_stream_denial_without_stream_name_falls_back_to_generic(hub, monkeypatch):
+    text = await _denied_query(hub, monkeypatch, "health", denied_gate="stream")
+    assert text == (
+        "The phone declined: permission for that data stream is disabled in "
+        "Talaria's privacy settings."
+    )

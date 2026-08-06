@@ -250,3 +250,33 @@ async def test_query_result_wrong_device_cannot_answer_anothers_query(env):
     })
     assert resolved == {"ok": True}
     assert (await asyncio.wait_for(future, 0.5)) == {"text": "real"}
+
+
+# -- #260(B): the app's denial-gate fields survive the envelope -------------
+
+async def test_query_result_forwards_denial_gate_fields(env):
+    service, hub = env
+    paired = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-1", "device_name": "p"})
+    qid, future = hub.enqueue_query(paired["device_id"], "health", {})
+    resolved = await service.dispatch({
+        "type": "query_result", "auth": paired["device_token"],
+        "device_id": paired["device_id"], "query_id": qid,
+        "error": "permission_denied", "denied_gate": "master",
+    })
+    assert resolved == {"ok": True}
+    assert (await asyncio.wait_for(future, 0.5)) == {
+        "error": "permission_denied", "denied_gate": "master",
+    }
+
+
+async def test_query_result_drops_non_string_denial_fields(env):
+    service, hub = env
+    paired = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-1", "device_name": "p"})
+    qid, future = hub.enqueue_query(paired["device_id"], "health", {})
+    resolved = await service.dispatch({
+        "type": "query_result", "auth": paired["device_token"],
+        "device_id": paired["device_id"], "query_id": qid,
+        "error": "permission_denied", "denied_gate": 7, "denied_stream": ["health"],
+    })
+    assert resolved == {"ok": True}
+    assert (await asyncio.wait_for(future, 0.5)) == {"error": "permission_denied"}

@@ -85,11 +85,41 @@ async def phone_query(args: dict, **kwargs) -> str:
         hub.discard_query(query_id)
     if isinstance(answer, dict) and answer.get("error"):
         if answer["error"] == "permission_denied":
-            return "The phone declined: permission for that data stream is disabled in Talaria's privacy settings."
+            return _declined_prose(answer)
         return f"The phone could not answer: {str(answer['error'])[:200]}. Do not retry this turn."
     if isinstance(answer, dict) and isinstance(answer.get("text"), str):
         return answer["text"]
     return "The phone sent an unreadable answer."
+
+
+def _declined_prose(answer: dict) -> str:
+    """#260(B): name the gate that actually refused, when the app says.
+
+    Three shapes: master (one switch gates everything), stream (a specific
+    sensor toggle, possibly not the one the query kind suggests — weather is
+    gated by Location), and the bare pre-#260 denial, which keeps the generic
+    prose byte-identical so old apps degrade to shipped behavior.
+    """
+    gate = answer.get("denied_gate")
+    if gate == "master":
+        return (
+            'The phone declined: the master "Share Sensors with Hermes" switch is '
+            "off in Talaria's privacy settings. That one switch gates ALL sensor "
+            "sharing — streams and queries alike — so flipping an individual "
+            "sensor toggle will not unblock this."
+        )
+    stream = answer.get("denied_stream")
+    if gate == "stream" and isinstance(stream, str) and stream:
+        label = stream.capitalize()
+        return (
+            f"The phone declined: the {label} sensor toggle is off in Talaria's "
+            f"privacy settings. The master sensor switch is on, so enabling "
+            f"{label} is what unblocks this."
+        )
+    return (
+        "The phone declined: permission for that data stream is disabled in "
+        "Talaria's privacy settings."
+    )
 
 
 def register_tools(ctx) -> None:

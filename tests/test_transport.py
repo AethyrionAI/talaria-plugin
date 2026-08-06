@@ -128,3 +128,42 @@ async def test_resolve_query_refuses_wrong_device_then_owner_still_resolves():
     assert future.done() is False
     assert hub.resolve_query(qid, result={"text": "real"}, device_id="dev-a") is True
     assert (await asyncio.wait_for(future, 0.5)) == {"text": "real"}
+
+
+# -- #260(B): denial-gate detail rides the error answer ---------------------
+
+async def test_error_detail_fields_ride_the_error_answer():
+    hub = TransportHub(time_fn=lambda: 100.0)
+    qid, future = hub.enqueue_query("dev1", "health", {})
+    assert hub.resolve_query(
+        qid, error="permission_denied",
+        error_detail={"denied_gate": "stream", "denied_stream": "health"},
+        device_id="dev1",
+    )
+    assert (await future) == {
+        "error": "permission_denied",
+        "denied_gate": "stream",
+        "denied_stream": "health",
+    }
+
+
+async def test_error_detail_drops_non_strings_and_cannot_clobber_error():
+    hub = TransportHub(time_fn=lambda: 100.0)
+    qid, future = hub.enqueue_query("dev1", "health", {})
+    assert hub.resolve_query(
+        qid, error="permission_denied",
+        error_detail={"denied_gate": 7, "denied_stream": None, "error": "spoofed"},
+        device_id="dev1",
+    )
+    assert (await future) == {"error": "permission_denied"}
+
+
+async def test_error_detail_is_ignored_on_result_answers():
+    hub = TransportHub(time_fn=lambda: 100.0)
+    qid, future = hub.enqueue_query("dev1", "health", {})
+    assert hub.resolve_query(
+        qid, result={"text": "Steps today: 42"},
+        error_detail={"denied_gate": "master"},
+        device_id="dev1",
+    )
+    assert (await future) == {"text": "Steps today: 42"}

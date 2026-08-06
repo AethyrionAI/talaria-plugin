@@ -160,11 +160,20 @@ class EnvelopeService:
         if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
         query_id = payload.get("query_id")
+        # #260(B): the app may name WHICH gate refused; forward the (string)
+        # fields so the tool's prose can relay them. Anything non-string is
+        # dropped here, and an old app that sends neither key changes nothing.
+        error_detail = {
+            key: payload.get(key)
+            for key in ("denied_gate", "denied_stream")
+            if isinstance(payload.get(key), str)
+        }
         resolved = self._hub.resolve_query(
             query_id if isinstance(query_id, str) else "",
             result=payload.get("result"),
             error=payload.get("error"),
             device_id=device["id"],
+            error_detail=error_detail or None,
         )
         return {"ok": bool(resolved)}
 

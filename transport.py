@@ -103,7 +103,7 @@ class TransportHub:
         return self._queries.pop(device_id, [])
 
     def resolve_query(self, query_id: str, result: dict | None = None, error: str | None = None,
-                       device_id: str | None = None) -> bool:
+                       device_id: str | None = None, error_detail: dict | None = None) -> bool:
         entry = self._futures.get(query_id)
         if entry is None:
             return False
@@ -116,7 +116,18 @@ class TransportHub:
         self._futures.pop(query_id, None)
         if future.done():
             return False
-        future.set_result({"error": error} if error is not None else (result or {}))
+        if error is not None:
+            answer = {"error": error}
+            # #260(B): denial-gate metadata rides the error answer so the
+            # tool's prose can name the actual blocker. String-only and never
+            # the "error" key itself — the detail explains the error, it does
+            # not get to rewrite it.
+            for key, value in (error_detail or {}).items():
+                if key != "error" and isinstance(key, str) and isinstance(value, str):
+                    answer[key] = value
+            future.set_result(answer)
+        else:
+            future.set_result(result or {})
         return True
 
     def discard_query(self, query_id: str) -> None:
