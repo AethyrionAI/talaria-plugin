@@ -17,7 +17,7 @@ class TransportHub:
         self._time = time_fn
         self._last_seen: dict[str, float] = {}
         self._events: dict[str, asyncio.Event] = {}
-        self._parked: set[str] = set()
+        self._parked_counts: dict[str, int] = {}
         self._queries: dict[str, list[dict]] = {}
         self._futures: dict[str, asyncio.Future] = {}
 
@@ -26,7 +26,7 @@ class TransportHub:
         self._last_seen[device_id] = self._time()
 
     def is_live(self, window_seconds: float = 60.0) -> bool:
-        if self._parked:
+        if self._parked_counts:
             return True
         now = self._time()
         return any(now - seen <= window_seconds for seen in self._last_seen.values())
@@ -44,14 +44,26 @@ class TransportHub:
 
     async def park(self, device_id: str, timeout: float = 25.0) -> None:
         event = self._event(device_id)
-        event.clear()
-        self._parked.add(device_id)
+        self._parked_counts[device_id] = self._parked_counts.get(device_id, 0) + 1
         try:
-            await asyncio.wait_for(event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            pass
+            # A wake() that landed before this park() started (the ordinary
+            # long-poll case) must not be discarded — consume it and return
+            # at once rather than clearing it away and waiting a full cycle.
+            if event.is_set():
+                event.clear()
+                return
+            try:
+                await asyncio.wait_for(event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+            else:
+                event.clear()
         finally:
-            self._parked.discard(device_id)
+            remaining = self._parked_counts.get(device_id, 0) - 1
+            if remaining <= 0:
+                self._parked_counts.pop(device_id, None)
+            else:
+                self._parked_counts[device_id] = remaining
 
     def wake(self, device_id: str | None = None) -> None:
         if device_id is not None:
@@ -63,7 +75,7 @@ class TransportHub:
     # -- phone queries --------------------------------------------------------
     def enqueue_query(self, device_id: str, kind: str, params: dict) -> tuple[str, asyncio.Future]:
         query_id = uuid.uuid4().hex[:12]
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._queries.setdefault(device_id, []).append(
             {"id": query_id, "kind": kind, "params": params or {}}
         )
@@ -78,7 +90,7 @@ class TransportHub:
         future = self._futures.pop(query_id, None)
         if future is None or future.done():
             return False
-        future.set_result({"error": error} if error else (result or {}))
+        future.set_result({"error": error} if error is not None else (result or {}))
         return True
 
 

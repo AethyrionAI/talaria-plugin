@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 
@@ -66,3 +67,38 @@ async def test_resolve_with_error_resolves_future_with_error_dict():
     qid, future = hub.enqueue_query("dev1", "health", {"metric": "steps"})
     hub.resolve_query(qid, error="permission_denied")
     assert (await asyncio.wait_for(future, 0.5)) == {"error": "permission_denied"}
+
+
+@pytest.mark.asyncio
+async def test_wake_before_park_returns_immediately():
+    # Regression: a wake() that arrived before park() started (the ordinary
+    # long-poll case — a query lands between two polls) must not be
+    # discarded by park()'s unconditional event.clear().
+    hub = TransportHub()
+    hub.enqueue_query("dev1", "location", {})  # enqueue wakes "dev1"
+    start = time.monotonic()
+    await asyncio.wait_for(hub.park("dev1", timeout=5.0), timeout=1.0)
+    assert time.monotonic() - start < 1.0
+
+
+@pytest.mark.asyncio
+async def test_overlapping_parks_keep_liveness_until_last_exits():
+    # Regression: two overlapping park() calls for one device must not
+    # share a single set-membership entry — the shorter one finishing
+    # first must not erase liveness for the longer one still parked.
+    hub = TransportHub()
+    task_a = asyncio.create_task(hub.park("dev1", timeout=2.0))
+    task_b = asyncio.create_task(hub.park("dev1", timeout=0.05))
+    await asyncio.wait_for(task_b, timeout=0.5)
+    assert hub.is_live(60) is True  # A is still parked
+    hub.wake("dev1")
+    await asyncio.wait_for(task_a, timeout=0.5)
+    assert hub.is_live(60) is False  # both parks have now exited
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_empty_string_error_still_resolves_as_error():
+    hub = TransportHub()
+    qid, future = hub.enqueue_query("dev1", "health", {})
+    hub.resolve_query(qid, error="")
+    assert (await asyncio.wait_for(future, 0.5)) == {"error": ""}
