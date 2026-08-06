@@ -35,6 +35,7 @@ _SCHEMAS = {
                     "params": {
                         "type": "object",
                         "description": "Kind-specific string parameters, e.g. {\"metric\": \"steps\"}.",
+                        "additionalProperties": {"type": "string"},
                     },
                 },
                 "required": ["kind"],

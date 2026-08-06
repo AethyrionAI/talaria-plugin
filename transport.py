@@ -76,8 +76,21 @@ class TransportHub:
     def enqueue_query(self, device_id: str, kind: str, params: dict) -> tuple[str, asyncio.Future]:
         query_id = uuid.uuid4().hex[:12]
         future: asyncio.Future = asyncio.get_running_loop().create_future()
+        # The app decodes a drained query's params strictly as
+        # [String: String] — one non-string value (a model authoring
+        # {"window_days": 3} instead of {"window_days": "3"}) fails the
+        # WHOLE drain decode, not just this query, so the query dies to
+        # the tool's 25s timeout even with the phone live and every other
+        # item in that drain batch waits a cycle. This is the single choke
+        # point every query passes through regardless of caller, so
+        # coercion belongs here rather than at each call site (tools.py
+        # already sends strings from the schema, but a future caller
+        # forgetting to would silently reintroduce the same failure).
+        # Keys are already strings from JSON; str()'d anyway in case a
+        # caller ever hands us a non-JSON-sourced dict.
+        safe_params = {str(k): str(v) for k, v in (params or {}).items()}
         self._queries.setdefault(device_id, []).append(
-            {"id": query_id, "kind": kind, "params": params or {}}
+            {"id": query_id, "kind": kind, "params": safe_params}
         )
         # Owner travels with the future so resolve_query can refuse a
         # different device's attempt to answer this query (fabricated

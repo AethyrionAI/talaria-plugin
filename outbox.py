@@ -49,12 +49,18 @@ def _now_iso() -> str:
 
 
 def append(text: str, meta: dict | None = None) -> dict:
+    # Same strict-decode shape as transport.enqueue_query's params: the app
+    # decodes item meta as [String: String], so one non-string value would
+    # never decode, never ack, and fail every drain forever for a DURABLE
+    # item (#251 latent finding — live writers only produce strings today;
+    # closing the class here rather than trusting every future caller).
+    safe_meta = {str(k): str(v) for k, v in (meta or {}).items()}
     item = {
         "id": uuid.uuid4().hex[:12],
         "kind": "message",
         "text": text,
         "created_at": _now_iso(),
-        "meta": meta or {},
+        "meta": safe_meta,
         "delivered_at": None,
         "active": True,
     }

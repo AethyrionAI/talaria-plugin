@@ -105,6 +105,19 @@ async def test_resolve_with_empty_string_error_still_resolves_as_error():
 
 
 @pytest.mark.asyncio
+async def test_enqueue_query_stringifies_non_string_param_values():
+    # The app decodes a drained query's params strictly as [String: String];
+    # one non-string value (a model authoring {"window_days": 3} instead of
+    # {"window_days": "3"}) must never poison the whole drain decode (#251
+    # finding 1).
+    hub = TransportHub()
+    hub.enqueue_query("dev1", "calendar", {"window_days": 3, "flag": True})
+    [taken] = hub.take_queries("dev1")
+    assert taken["params"] == {"window_days": "3", "flag": "True"}
+    assert all(isinstance(v, str) for v in taken["params"].values())
+
+
+@pytest.mark.asyncio
 async def test_resolve_query_refuses_wrong_device_then_owner_still_resolves():
     # Regression: a valid token for device B must not be able to answer
     # (or discard) a query that was enqueued to device A — that would be

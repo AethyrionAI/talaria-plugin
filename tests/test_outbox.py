@@ -32,6 +32,18 @@ def test_mark_delivered_is_idempotent_and_reports_only_real_acks(monkeypatch, tm
     assert outbox.mark_delivered([item["id"]]) == []
 
 
+def test_append_stringifies_non_string_meta_values(monkeypatch, tmp_path):
+    # A DURABLE item with a non-string meta value would never decode
+    # app-side (strict [String: String]), never ack, and fail every drain
+    # forever — close the class even though live writers only produce
+    # strings today (#251 finding 2, latent).
+    _redirect(monkeypatch, tmp_path)
+    item = outbox.append("hello", meta={"n": 7})
+    assert item["meta"] == {"n": "7"}
+    [row] = outbox.pending()
+    assert row["meta"] == {"n": "7"}
+
+
 def test_outbox_survives_reload(monkeypatch, tmp_path):
     _redirect(monkeypatch, tmp_path)
     item = outbox.append("durable")

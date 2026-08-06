@@ -13,6 +13,14 @@ def hub(monkeypatch):
     return hub
 
 
+def test_schema_params_declares_string_additional_properties():
+    # Well-behaved models should send strings in the first place; the
+    # transport-layer coercion (transport.enqueue_query) is the backstop
+    # for the ones that don't (#251 finding 1).
+    params_schema = tools._SCHEMAS["talaria_phone_query"]["function"]["parameters"]["properties"]["params"]
+    assert params_schema["additionalProperties"] == {"type": "string"}
+
+
 def test_check_fn_false_when_no_device(hub):
     assert tools._transport_available() is False
 
