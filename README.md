@@ -46,3 +46,18 @@ hermes talaria unpair   # deactivates (records kept for rollback, never deleted)
 
 Device store: `<HERMES_HOME>/talaria/devices.json` (0600, tokens hashed,
 profile-aware).
+
+## Running the tests
+
+Use the hermes venv's pytest binary directly, from the plugin root:
+
+```
+~/.hermes/hermes-agent/venv/bin/pytest tests/ -v
+```
+
+Do NOT use `python -m pytest` here: `-m` puts the plugin root on
+`sys.path[0]`, where `tools.py` shadows hermes-agent's own top-level
+`tools/` package the moment `gateway.*` is imported (and any stdlib-named
+module would collide the same way). Production plugin loading is immune —
+`hermes_cli/plugins.py` loads plugins package-namespaced
+(`hermes_plugins.talaria`) with no sys.path insertion.
