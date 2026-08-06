@@ -100,3 +100,46 @@ def deactivate(device_id: str | None = None) -> int:
     if count:
         _save(data)
     return count
+
+
+def create_paired_device(install_id: str, name: str) -> tuple[str, str]:
+    """App-driven pairing (2A): mint a device bound to a durable install id.
+
+    Re-pairing the same install deactivates the prior row first (#144 —
+    rotate, never accumulate; rollback stays possible).
+    """
+    data = _load()
+    for device in data.get("devices", []):
+        if device.get("active") and device.get("install_id") == install_id:
+            device["active"] = False
+            device["deactivated"] = _now_iso()
+    token = secrets.token_urlsafe(32)
+    device_id = uuid.uuid4().hex[:12]
+    data["devices"].append({
+        "id": device_id,
+        "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "created": _now_iso(),
+        "active": True,
+        "last_seen": None,
+        "name": name or None,
+        "install_id": install_id,
+    })
+    _save(data)
+    return device_id, token
+
+
+def device_for_token(token: str) -> dict | None:
+    digest = hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+    for device in active_devices():
+        if device.get("token_sha256") == digest:
+            return device
+    return None
+
+
+def touch_device(device_id: str) -> None:
+    data = _load()
+    for device in data.get("devices", []):
+        if device.get("id") == device_id and device.get("active"):
+            device["last_seen"] = _now_iso()
+            _save(data)
+            return
