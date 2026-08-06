@@ -51,6 +51,17 @@ async def test_phone_query_timeout_is_honest(hub, monkeypatch):
     assert "did not answer" in text.lower()
 
 
+async def test_phone_query_timeout_discards_the_query_from_the_hub(hub, monkeypatch):
+    # A timed-out query must not linger forever as a phantom future a late
+    # phone answer could still resolve, or a queued item a drain would keep
+    # handing out (I2, coordinator fix round).
+    monkeypatch.setattr(tools, "_QUERY_TIMEOUT", 0.05)
+    hub.touch("dev1")
+    await tools.phone_query({"kind": "health", "params": {"metric": "steps"}})
+    assert hub._futures == {}
+    assert hub._queries.get("dev1", []) == []
+
+
 async def test_phone_query_error_result_reported_plainly(hub, monkeypatch):
     monkeypatch.setattr(tools, "_QUERY_TIMEOUT", 1.0)
     hub.touch("dev1")

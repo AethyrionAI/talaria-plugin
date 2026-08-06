@@ -1,6 +1,6 @@
 """Envelope core for the Talaria platform adapter (spec §1.1).
 
-Pure logic, dependency-injected for tests; platform.py wraps it. The
+Pure logic, dependency-injected for tests; platform_adapter.py wraps it. The
 route verifies the HEADER (authentication — bad creds 401 before
 dispatch); dispatch authorizes from the payload's `auth` field (spec
 Addendum): pair requires the API key, device ops require the device's

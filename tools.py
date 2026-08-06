@@ -69,15 +69,23 @@ async def phone_query(args: dict, **kwargs) -> str:
             "(the app is probably closed). Do not retry this turn."
         )
     device_id = hub.freshest_device()
-    _, future = hub.enqueue_query(device_id, kind, (args or {}).get("params") or {})
+    query_id, future = hub.enqueue_query(device_id, kind, (args or {}).get("params") or {})
     try:
         answer = await asyncio.wait_for(future, timeout=_QUERY_TIMEOUT)
     except asyncio.TimeoutError:
         return "The phone did not answer in time — it may have just gone to background. Do not retry this turn."
+    finally:
+        # Always discard, not just on the timeout path: a resolved future
+        # was already popped from hub._futures by resolve_query, and any
+        # already-drained _queries entry was already popped by
+        # take_queries, so this is a safe no-op there. Calling it
+        # unconditionally means there is no second "did this actually time
+        # out" branch to get wrong.
+        hub.discard_query(query_id)
     if isinstance(answer, dict) and answer.get("error"):
         if answer["error"] == "permission_denied":
             return "The phone declined: permission for that data stream is disabled in Talaria's privacy settings."
-        return f"The phone could not answer: {answer['error']}."
+        return f"The phone could not answer: {str(answer['error'])[:200]}. Do not retry this turn."
     if isinstance(answer, dict) and isinstance(answer.get("text"), str):
         return answer["text"]
     return "The phone sent an unreadable answer."

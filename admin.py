@@ -31,8 +31,8 @@ def handle_cli(args) -> None:
         print("One-time pairing token (not stored — copy it into the Talaria app now):")
         print(f"  {token}")
         print()
-        print("Note: the app-side handshake that consumes this token ships with the")
-        print("Phase 2 webhook adapter. This record marks the host side as ready.")
+        print("Note: the Talaria app can also pair itself directly against the")
+        print("platform adapter — this command remains the manual fallback path.")
     elif cmd == "unpair":
         count = store.deactivate(getattr(args, "device_id", None))
         if count:
@@ -50,7 +50,7 @@ def handle_cli(args) -> None:
     else:  # status is also the default
         records = store.devices()
         active = [d for d in records if d.get("active")]
-        print("Talaria plugin — Phase 1 (tools + admin; webhook transport lands in Phase 2)")
+        print("Talaria plugin — tools + admin + webhook platform adapter (2A)")
         print(f"Store: {store._store_path()}")
         if not records:
             print("No paired devices. Run `hermes talaria pair` to create one.")

@@ -10,10 +10,10 @@ pseudo-member exactly as plugins/platforms/google_chat does.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 from . import outbox, store
 from .envelope import EnvelopeService
@@ -41,10 +41,16 @@ class TalariaPlatformAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         return None
 
-    async def send(self, chat_id: str, text: str, **kwargs) -> Any:
-        item = outbox.append(text, meta={"chat_id": chat_id})
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        item = outbox.append(content, meta={"chat_id": chat_id})
         HUB.wake()
-        return item["id"]
+        return SendResult(success=True, message_id=item["id"])
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": "Talaria", "type": "device"}

@@ -18,7 +18,7 @@ def register(ctx) -> None:
     tools.register_tools(ctx)
     admin.register_cli(ctx)
     try:
-        from .platform import TalariaPlatformAdapter
+        from .platform_adapter import TalariaPlatformAdapter
         ctx.register_platform(
             name="talaria",
             label="Talaria",

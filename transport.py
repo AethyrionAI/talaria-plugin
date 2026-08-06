@@ -106,5 +106,24 @@ class TransportHub:
         future.set_result({"error": error} if error is not None else (result or {}))
         return True
 
+    def discard_query(self, query_id: str) -> None:
+        """Drop a query that will never be answered (e.g. the tool gave up).
+
+        Removes the ``_futures`` entry and any not-yet-drained pending
+        payload from ``_queries`` so a timed-out query does not sit forever
+        as a phantom entry a phone might still answer into, or a queued
+        item a `drain` would keep handing out. Safe no-op if the query was
+        already resolved (``resolve_query`` already popped ``_futures``)
+        or already taken by a drain (already popped from ``_queries``).
+        """
+        self._futures.pop(query_id, None)
+        for device_id, pending in list(self._queries.items()):
+            remaining = [q for q in pending if q.get("id") != query_id]
+            if len(remaining) != len(pending):
+                if remaining:
+                    self._queries[device_id] = remaining
+                else:
+                    self._queries.pop(device_id, None)
+
 
 HUB = TransportHub()
