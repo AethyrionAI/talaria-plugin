@@ -18,6 +18,8 @@ def setup_cli(subparser) -> None:
         "device_id", nargs="?", default=None,
         help="Device id from `hermes talaria status` (omit to deactivate all)",
     )
+    send = subs.add_parser("send", help="Queue a message for the phone's next drain")
+    send.add_argument("text", nargs="*", help="Message text to queue for the phone")
 
 
 def handle_cli(args) -> None:
@@ -37,6 +39,14 @@ def handle_cli(args) -> None:
             print(f"Deactivated {count} device record(s). Records are kept for rollback.")
         else:
             print("No matching active device record.")
+    elif cmd == "send":
+        from . import outbox
+        text = " ".join(getattr(args, "text", []) or []).strip()
+        if not text:
+            print("Usage: hermes talaria send <text>")
+            return
+        item = outbox.append(text, meta={"source": "cli"})
+        print(f"Queued outbox item {item['id']} — delivered on the phone's next drain.")
     else:  # status is also the default
         records = store.devices()
         active = [d for d in records if d.get("active")]
@@ -55,7 +65,7 @@ def handle_cli(args) -> None:
 def register_cli(ctx) -> None:
     ctx.register_cli_command(
         name="talaria",
-        help="Talaria phone bridge admin (pair, status, unpair)",
+        help="Talaria phone bridge admin (pair, status, unpair, send)",
         setup_fn=setup_cli,
         handler_fn=handle_cli,
         description="Pairing and status admin for the Talaria iOS app's Hermes bridge.",
