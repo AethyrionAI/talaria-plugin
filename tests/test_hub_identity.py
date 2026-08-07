@@ -21,8 +21,20 @@ holds the invariant while the two routes that COULD break it stay unobserved
 (a manifest-name divergence giving the package a second module name, or a
 submodule eviction after a failed import letting ``transport`` re-execute).
 
-Falsifiability was demonstrated once, for the PR record, by forcing a
-``transport`` re-execution — see the lane notes.
+A pin that can only pass is not a pin, so its falsifiability was DEMONSTRATED
+once: inserting ``sys.modules.pop(f'{package}.transport', None)`` before the
+reload below — i.e. forcing route (2) — makes it fail, and fail with the
+right diagnosis:
+
+    FAILED test_hub_identity.py::test_hub_survives_a_loader_faithful_package_reload
+    E  AssertionError: a package reload gave tools._hub() a NEW hub — the
+       late binder drifted (#263(a))
+    E  assert <talaria.transport.TransportHub object at 0x109b807d0>
+           is <talaria.transport.TransportHub object at 0x108e6a850>
+    1 failed, 3 passed
+
+Two distinct TransportHub instances — the split, exactly. The demo line was
+then removed; do not leave it in.
 """
 
 import importlib.util
