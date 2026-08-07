@@ -54,12 +54,39 @@ def handle_cli(args) -> None:
         print(f"Store: {store._store_path()}")
         if not records:
             print("No paired devices. Run `hermes talaria pair` to create one.")
+            _print_transport_counters()
             return
         print(f"{len(active)} active / {len(records)} total device record(s):")
         for device in records:
             state = "active" if device.get("active") else "inactive"
             last_seen = device.get("last_seen") or "—"
             print(f"  {device['id']}  {state:8}  created {device.get('created', '—')}  last seen {last_seen}")
+        _print_transport_counters()
+
+
+def _print_transport_counters() -> None:
+    """#263-E: make a transport forensic a CLI call instead of a log crawl.
+
+    These are IN-PROCESS counters. The bare CLI is a separate process from
+    the gateway, so it reports no activity; the numbers are live when this
+    runs inside the gateway. Say which is which rather than printing a
+    misleading row of zeros.
+    """
+    from .transport import HUB
+
+    counters = HUB.counters
+    print()
+    print(f"Transport hub {id(HUB)} (this process):")
+    if not any(counters.values()):
+        print("  no transport activity in this process — expected from the")
+        print("  bare CLI; the gateway process holds the live hub.")
+        return
+    print(f"  queries enqueued / delivered  {counters['queries_enqueued']} / {counters['queries_delivered']}")
+    print(f"  parks woken / timed out       {counters['parks_woken']} / {counters['parks_timed_out']}")
+    print(f"  wakes MISSED                  {counters['wakes_missed']}")
+    print(f"  full-cycle deliveries         {counters['full_cycle_deliveries']}")
+    if counters["wakes_missed"] or counters["full_cycle_deliveries"]:
+        print("  ^ nonzero means a wake failed to release a parked drain (#263(b))")
 
 
 def register_cli(ctx) -> None:

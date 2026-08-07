@@ -8,10 +8,19 @@ model never burns a turn on a dead transport (Phase 1 rule, kept).
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from . import store
 
-_QUERY_TIMEOUT = 25.0
+logger = logging.getLogger("talaria")
+
+# #263-C: STRICTLY greater than the drain hold (EnvelopeService's
+# hold_seconds, 25.0). They were equal, so a query enqueued just after a park
+# began could only be answered at the exact instant the tool gave up — every
+# live query on 2026-08-06 finished at 25.00-25.01s, winning or losing by
+# milliseconds. With the margin, a delivery that costs a full poll cycle is a
+# slow answer instead of a user-visible failure.
+_QUERY_TIMEOUT = 40.0
 _LIVE_WINDOW_SECONDS = 60.0
 
 _KINDS = ["location", "health", "motion", "weather", "calendar", "reminders", "deviceStatus"]
@@ -51,7 +60,19 @@ def _hub():
 
 
 def _transport_available() -> bool:
-    return _hub().is_live(_LIVE_WINDOW_SECONDS)
+    # #263-E: log WHICH hub instance the check_fn read, plus the liveness
+    # inputs. An id() here that differs from platform_adapter's attach stamp
+    # is the split hub (#263(a)); the SAME id with live=False is an honestly
+    # dead transport (what 2026-08-06 20:51 actually was — the phone had
+    # stopped draining for ten minutes). Those two look identical from the
+    # outside and this line is what separates them.
+    hub = _hub()
+    live = hub.is_live(_LIVE_WINDOW_SECONDS)
+    logger.debug(
+        "check_fn hub=%s live=%s parked=%d last_seen=%d",
+        id(hub), live, len(hub._parked_counts), len(hub._last_seen),
+    )
+    return live
 
 
 async def phone_query(args: dict, **kwargs) -> str:

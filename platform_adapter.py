@@ -9,6 +9,7 @@ pseudo-member exactly as plugins/platforms/google_chat does.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, Optional, Tuple
 
@@ -18,6 +19,8 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from . import outbox, store
 from .envelope import EnvelopeService
 from .transport import HUB
+
+logger = logging.getLogger("talaria")
 
 
 def _api_key() -> str:
@@ -33,6 +36,11 @@ class TalariaPlatformAdapter(BasePlatformAdapter):
             store_mod=store,
             outbox_mod=outbox,
         )
+        # #263-E: this is the EARLY binder — HUB was frozen at module import
+        # (line 20) and the EnvelopeService holds it for life. Compare this
+        # id against tools.py's check_fn stamp; a mismatch is the #263(a)
+        # split hub, and the two are otherwise indistinguishable in the log.
+        logger.info("adapter attach hub=%s", id(HUB))
 
     # -- BasePlatformAdapter obligations ---------------------------------
     async def connect(self, *, is_reconnect: bool = False) -> bool:
