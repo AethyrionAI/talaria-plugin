@@ -150,3 +150,26 @@ async def test_stream_denial_without_stream_name_falls_back_to_generic(hub, monk
         "The phone declined: permission for that data stream is disabled in "
         "Talaria's privacy settings."
     )
+
+
+# -- #263-C: the tool must outlast one drain hold --------------------------
+
+def test_query_timeout_exceeds_the_drain_hold_by_a_margin():
+    """263-C. _QUERY_TIMEOUT must be STRICTLY greater than the drain hold.
+
+    They were equal (25.0 == 25.0), so a query enqueued just after a park
+    started could only be answered at the exact instant the tool gave up —
+    every live query on 2026-08-06 completed at 25.00-25.01s and the answer
+    won or lost by milliseconds. With a margin, a wake regression degrades to
+    a slow answer instead of a user-visible failure.
+    """
+    import inspect
+
+    from ..envelope import EnvelopeService
+
+    hold = inspect.signature(EnvelopeService.__init__).parameters["hold_seconds"].default
+    assert tools._QUERY_TIMEOUT >= hold + 10.0, (
+        f"_QUERY_TIMEOUT={tools._QUERY_TIMEOUT} leaves no margin over a "
+        f"{hold}s drain hold — a delivery that costs one full cycle races "
+        "the tool's own timeout (#263-C)"
+    )
