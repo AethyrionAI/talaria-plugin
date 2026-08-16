@@ -1,4 +1,6 @@
 import hashlib
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 from .. import store
 
@@ -16,12 +18,17 @@ def test_create_paired_device_persists_hash_not_token(monkeypatch, tmp_path):
     assert rows[0]["install_id"] == "install-1"
     assert rows[0]["name"] == "Owen's iPhone"
     assert rows[0]["token_sha256"] == hashlib.sha256(token.encode()).hexdigest()
-    assert token not in (tmp_path / "devices.json").read_text()
+    connection = sqlite3.connect(tmp_path / "talaria.db")
+    try:
+        dump = "\n".join(connection.iterdump())
+    finally:
+        connection.close()
+    assert token not in dump
 
 
 def test_repair_same_install_rotates(monkeypatch, tmp_path):
     _redirect(monkeypatch, tmp_path)
-    old_id, old_token = store.create_paired_device("install-1", "phone")
+    _old_id, old_token = store.create_paired_device("install-1", "phone")
     new_id, new_token = store.create_paired_device("install-1", "phone")
     actives = store.active_devices()
     assert [d["id"] for d in actives] == [new_id]
@@ -42,3 +49,14 @@ def test_touch_device_stamps_last_seen(monkeypatch, tmp_path):
     device_id, _ = store.create_paired_device("install-1", "phone")
     store.touch_device(device_id)
     assert store.active_devices()[0]["last_seen"] is not None
+
+
+def test_concurrent_pairings_preserve_every_device(monkeypatch, tmp_path):
+    _redirect(monkeypatch, tmp_path)
+    installs = [f"install-{index}" for index in range(100)]
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        pairs = list(pool.map(lambda install: store.create_paired_device(install, install), installs))
+
+    assert len({device_id for device_id, _ in pairs}) == len(installs)
+    assert {device["install_id"] for device in store.active_devices()} == set(installs)

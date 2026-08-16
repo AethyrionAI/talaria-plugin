@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -53,19 +53,26 @@ class TalariaPlatformAdapter(BasePlatformAdapter):
         self,
         chat_id: str,
         content: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> SendResult:
-        item = outbox.append(content, meta={"chat_id": chat_id})
-        HUB.wake()
+        try:
+            item = outbox.append(
+                content,
+                meta={"chat_id": chat_id},
+                target_device_id=chat_id,
+            )
+        except outbox.UnknownTargetError as exc:
+            return SendResult(success=False, error=str(exc))
+        HUB.wake(chat_id)
         return SendResult(success=True, message_id=item["id"])
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": "Talaria", "type": "device"}
 
     # -- HTTP events (the whole transport) --------------------------------
-    def verify_http_event_request(self, auth_header: str) -> Tuple[bool, str]:
+    def verify_http_event_request(self, auth_header: str) -> tuple[bool, str]:
         return self._envelope.verify(auth_header)
 
-    async def dispatch_http_event(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
+    async def dispatch_http_event(self, envelope: dict[str, Any]) -> dict[str, Any]:
         return await self._envelope.dispatch(envelope)

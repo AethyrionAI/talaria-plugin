@@ -139,21 +139,22 @@ class EnvelopeService:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
         device_id = device["id"]
         self._touch(device_id)
-        items = self._outbox.pending()
+        items = self._outbox.pending(device_id)
         queries = self._hub.take_queries(device_id)
         if not items and not queries and payload.get("wait"):
             await self._hub.park(device_id, timeout=self._hold)
             self._touch(device_id)
-            items = self._outbox.pending()
+            items = self._outbox.pending(device_id)
             queries = self._hub.take_queries(device_id)
         return {"items": items, "queries": queries}
 
     async def _ack(self, payload: dict) -> dict:
-        if self._device_authorized(payload) is None:
+        device = self._device_authorized(payload)
+        if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
         raw_ids = payload.get("item_ids")
         item_ids = [i for i in raw_ids if isinstance(i, str)] if isinstance(raw_ids, list) else []
-        return {"acked": self._outbox.mark_delivered(item_ids)}
+        return {"acked": self._outbox.mark_delivered(item_ids, device_id=device["id"])}
 
     async def _query_result(self, payload: dict) -> dict:
         device = self._device_authorized(payload)

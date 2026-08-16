@@ -1,18 +1,13 @@
-"""Device/pairing store for the Talaria plugin.
+"""Transactional device and pairing store for the Talaria plugin.
 
-A small JSON file under HERMES_HOME — profile-aware via the canonical
-resolver, so per-profile installs never share pairing state. Records are
-deactivated, never deleted (rollback stays possible; mirrors the Talaria
-tracker's #144 convention).
-
-Tokens are stored as SHA-256 hashes only. The plaintext pairing token is
-printed exactly once by ``hermes talaria pair`` and never persisted.
+The plugin owns ``<HERMES_HOME>/talaria/talaria.db``. Pairing tokens are
+stored only as SHA-256 hashes, and device records are deactivated rather than
+deleted.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import secrets
 import uuid
 from datetime import datetime, timezone
@@ -20,126 +15,182 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
+from .database import connect
+
 
 def _store_path() -> Path:
+    """Legacy JSON path retained for first-use migration compatibility."""
     return Path(get_hermes_home()) / "talaria" / "devices.json"
 
 
-def _load() -> dict:
-    path = _store_path()
-    if not path.exists():
-        return {"devices": []}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        # A corrupt store must not brick the CLI; keep the bad file aside.
-        backup = path.with_suffix(".json.corrupt")
-        try:
-            path.rename(backup)
-        except OSError:
-            pass
-        return {"devices": []}
-
-
-def _save(data: dict) -> None:
-    path = _store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(path)
+def _database_path() -> Path:
+    return _store_path().with_name("talaria.db")
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def create_pairing() -> tuple[str, str]:
-    """Create a device record and return ``(device_id, plaintext_token)``.
+def _device_from_row(row) -> dict:
+    device = {
+        "id": row["id"],
+        "token_sha256": row["token_sha256"],
+        "created": row["created"],
+        "active": bool(row["active"]),
+        "last_seen": row["last_seen"],
+        "name": row["name"],
+    }
+    if row["install_id"] is not None:
+        device["install_id"] = row["install_id"]
+    if row["deactivated"] is not None:
+        device["deactivated"] = row["deactivated"]
+    return device
 
-    The token is returned to the caller for one-time display and only its
-    hash is persisted.
-    """
+
+def _new_credentials() -> tuple[str, str, str]:
     token = secrets.token_urlsafe(32)
-    device_id = uuid.uuid4().hex[:12]
-    data = _load()
-    data["devices"].append({
-        "id": device_id,
-        "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
-        "created": _now_iso(),
-        "active": True,
-        "last_seen": None,
-        "name": None,
-    })
-    _save(data)
-    return device_id, token
+    return uuid.uuid4().hex[:12], token, hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_pairing() -> tuple[str, str]:
+    """Create a manual pairing record and return its one-time plaintext token."""
+    device_id, token, token_sha256 = _new_credentials()
+    connection = connect(_database_path())
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            INSERT INTO devices (
+                id, token_sha256, install_id, name, created, active, last_seen, deactivated
+            ) VALUES (?, ?, NULL, NULL, ?, 1, NULL, NULL)
+            """,
+            (device_id, token_sha256, _now_iso()),
+        )
+        connection.commit()
+        return device_id, token
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def devices() -> list[dict]:
-    return list(_load().get("devices", []))
+    connection = connect(_database_path())
+    try:
+        rows = connection.execute(
+            "SELECT * FROM devices ORDER BY created, id"
+        ).fetchall()
+        return [_device_from_row(row) for row in rows]
+    finally:
+        connection.close()
 
 
 def active_devices() -> list[dict]:
-    return [d for d in devices() if d.get("active")]
+    connection = connect(_database_path())
+    try:
+        rows = connection.execute(
+            "SELECT * FROM devices WHERE active = 1 ORDER BY created, id"
+        ).fetchall()
+        return [_device_from_row(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def active_device(device_id: str) -> dict | None:
+    connection = connect(_database_path())
+    try:
+        row = connection.execute(
+            "SELECT * FROM devices WHERE id = ? AND active = 1",
+            (device_id,),
+        ).fetchone()
+        return _device_from_row(row) if row is not None else None
+    finally:
+        connection.close()
 
 
 def deactivate(device_id: str | None = None) -> int:
-    """Deactivate one device (or all when ``device_id`` is None).
-
-    Returns the number of records deactivated. Records are kept for
-    rollback — flip ``active`` back to true by hand if a deactivation was
-    a mistake.
-    """
-    data = _load()
-    count = 0
-    for device in data.get("devices", []):
-        if device.get("active") and (device_id is None or device.get("id") == device_id):
-            device["active"] = False
-            device["deactivated"] = _now_iso()
-            count += 1
-    if count:
-        _save(data)
-    return count
+    """Deactivate one device, or every active device when no id is supplied."""
+    connection = connect(_database_path())
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        if device_id is None:
+            cursor = connection.execute(
+                "UPDATE devices SET active = 0, deactivated = ? WHERE active = 1",
+                (_now_iso(),),
+            )
+        else:
+            cursor = connection.execute(
+                """
+                UPDATE devices SET active = 0, deactivated = ?
+                WHERE id = ? AND active = 1
+                """,
+                (_now_iso(), device_id),
+            )
+        connection.commit()
+        return cursor.rowcount
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def create_paired_device(install_id: str, name: str) -> tuple[str, str]:
-    """App-driven pairing (2A): mint a device bound to a durable install id.
-
-    Re-pairing the same install deactivates the prior row first (#144 —
-    rotate, never accumulate; rollback stays possible).
-    """
-    data = _load()
-    for device in data.get("devices", []):
-        if device.get("active") and device.get("install_id") == install_id:
-            device["active"] = False
-            device["deactivated"] = _now_iso()
-    token = secrets.token_urlsafe(32)
-    device_id = uuid.uuid4().hex[:12]
-    data["devices"].append({
-        "id": device_id,
-        "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
-        "created": _now_iso(),
-        "active": True,
-        "last_seen": None,
-        "name": name or None,
-        "install_id": install_id,
-    })
-    _save(data)
-    return device_id, token
+    """Atomically rotate any active row for an install and pair a new device."""
+    device_id, token, token_sha256 = _new_credentials()
+    timestamp = _now_iso()
+    connection = connect(_database_path())
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            UPDATE devices SET active = 0, deactivated = ?
+            WHERE install_id = ? AND active = 1
+            """,
+            (timestamp, install_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO devices (
+                id, token_sha256, install_id, name, created, active, last_seen, deactivated
+            ) VALUES (?, ?, ?, ?, ?, 1, NULL, NULL)
+            """,
+            (device_id, token_sha256, install_id, name or None, timestamp),
+        )
+        connection.commit()
+        return device_id, token
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def device_for_token(token: str) -> dict | None:
     digest = hashlib.sha256((token or "").encode("utf-8")).hexdigest()
-    for device in active_devices():
-        if device.get("token_sha256") == digest:
-            return device
-    return None
+    connection = connect(_database_path())
+    try:
+        row = connection.execute(
+            "SELECT * FROM devices WHERE token_sha256 = ? AND active = 1",
+            (digest,),
+        ).fetchone()
+        return _device_from_row(row) if row is not None else None
+    finally:
+        connection.close()
 
 
 def touch_device(device_id: str) -> None:
-    data = _load()
-    for device in data.get("devices", []):
-        if device.get("id") == device_id and device.get("active"):
-            device["last_seen"] = _now_iso()
-            _save(data)
-            return
+    connection = connect(_database_path())
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "UPDATE devices SET last_seen = ? WHERE id = ? AND active = 1",
+            (_now_iso(), device_id),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
