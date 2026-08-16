@@ -66,6 +66,12 @@ class TalariaPlatformAdapter(BasePlatformAdapter):
             )
         except outbox.UnknownTargetError as exc:
             return SendResult(success=False, error=str(exc))
+        except Exception as exc:
+            # 351-G: core call sites (delivery, cron, kanban, ledger) are
+            # written against the SendResult contract — a storage failure
+            # must not escape as a raise.
+            logger.warning("talaria send failed on a storage error: %s", exc)
+            return SendResult(success=False, error=f"storage failure: {exc}")
         HUB.wake(chat_id)
         return SendResult(success=True, message_id=item["id"])
 

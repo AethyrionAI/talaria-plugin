@@ -40,6 +40,8 @@ def handle_cli(args) -> int:
         print()
         print("Note: the Talaria app can also pair itself directly against the")
         print("platform adapter — this command remains the manual fallback path.")
+        print("CLI-paired records do not auto-rotate when the app re-pairs;")
+        print("unpair this id manually if the app later pairs itself.")
         return 0
     elif cmd == "unpair":
         count = store.deactivate(getattr(args, "device_id", None))
@@ -106,7 +108,12 @@ def handle_cli(args) -> int:
         for device in records:
             state = "active" if device.get("active") else "inactive"
             last_seen = device.get("last_seen") or "—"
-            print(f"  {device['id']}  {state:8}  created {device.get('created', '—')}  last seen {last_seen}")
+            name = device.get("name") or "—"
+            install = device.get("install_id") or "—"
+            print(
+                f"  {device['id']}  {state:8}  {name}  install {install}  "
+                f"created {device.get('created', '—')}  last seen {last_seen}"
+            )
         _print_transport_counters()
         return 0
 

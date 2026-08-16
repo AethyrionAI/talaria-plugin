@@ -12,6 +12,7 @@ content= as a keyword).
 """
 
 import inspect
+import sqlite3
 
 from .. import database, outbox, platform_adapter, store
 from ..platform_adapter import TalariaPlatformAdapter
@@ -64,3 +65,18 @@ async def test_send_addressed_by_install_id_survives_repair(monkeypatch, tmp_pat
     result = await adapter.send("stable-install", "hello after re-pair")
     assert result.success is True
     assert [row["id"] for row in outbox.pending(new_id)] == [result.message_id]
+
+
+async def test_send_never_raises_on_storage_failure(monkeypatch, tmp_path):
+    """351-G: core call sites are written against the SendResult contract —
+    a storage failure must come back as a failed result, not a raise."""
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
+    adapter = object.__new__(TalariaPlatformAdapter)
+
+    def boom(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(outbox, "append", boom)
+    result = await adapter.send("any-device", "content")
+    assert result.success is False
+    assert "database is locked" in result.error

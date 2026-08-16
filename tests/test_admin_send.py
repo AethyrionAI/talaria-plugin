@@ -103,3 +103,21 @@ def test_cli_parser_exposes_mutually_exclusive_device_and_all_flags():
 
     with pytest.raises(SystemExit):
         parser.parse_args(["send", "--device", "phone-1", "--all", "hello"])
+
+
+def test_status_prints_device_names(monkeypatch, tmp_path, capsys):
+    """351-H: --device <id> is mandatory at >1 active, so status must let
+    the operator tell the ids apart."""
+    _redirect(monkeypatch, tmp_path)
+    device_id, _ = store.create_paired_device("i-phone", "Owen's iPhone")
+    admin.handle_cli(SimpleNamespace(talaria_cmd="status"))
+    out = capsys.readouterr().out
+    assert "Owen's iPhone" in out
+    assert "i-phone" in out
+    assert device_id in out
+
+
+def test_cli_pair_warns_about_manual_rows(monkeypatch, tmp_path, capsys):
+    _redirect(monkeypatch, tmp_path)
+    admin.handle_cli(SimpleNamespace(talaria_cmd="pair"))
+    assert "auto-rotate" in capsys.readouterr().out

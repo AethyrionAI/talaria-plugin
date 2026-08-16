@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 
-from .database import connect
+from .database import connect, try_connect_readonly
 
 
 def _now_iso() -> str:
@@ -92,6 +93,24 @@ def active_devices() -> list[dict]:
             "SELECT * FROM devices WHERE active = 1 ORDER BY created, id"
         ).fetchall()
         return [_device_from_row(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def active_devices_probe() -> list[dict]:
+    """Read-only view for liveness prose (351-I): never creates the
+    database, never migrates, never raises — a missing or unreadable
+    store reads as 'no devices', which is the honest answer there."""
+    connection = try_connect_readonly()
+    if connection is None:
+        return []
+    try:
+        rows = connection.execute(
+            "SELECT * FROM devices WHERE active = 1 ORDER BY created, id"
+        ).fetchall()
+        return [_device_from_row(row) for row in rows]
+    except sqlite3.Error:
+        return []
     finally:
         connection.close()
 

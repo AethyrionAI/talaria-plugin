@@ -81,7 +81,10 @@ async def phone_query(args: dict, **kwargs) -> str:
         return f"Unknown query kind \"{kind}\" — supported: {', '.join(_KINDS)}."
     hub = _hub()
     if not hub.is_live(_LIVE_WINDOW_SECONDS):
-        if not store.active_devices():
+        # 351-I: the read-only probe — a read path must not create the
+        # database as a side effect, and a storage failure here must
+        # degrade to the honest prose, never a tool crash.
+        if not await asyncio.to_thread(store.active_devices_probe):
             return (
                 "Phone unreachable: no Talaria device is paired with this host. "
                 "The user can pair by opening the Talaria app. Do not retry this turn."

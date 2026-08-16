@@ -173,3 +173,21 @@ def test_query_timeout_exceeds_the_drain_hold_by_a_margin():
         f"{hold}s drain hold — a delivery that costs one full cycle races "
         "the tool's own timeout (#263-C)"
     )
+
+
+def test_probe_on_virgin_profile_creates_no_database(monkeypatch, tmp_path):
+    """351-I: the honest-unreachable prose must not create durable state as
+    a side effect of a read (the accidental-DB incident's mechanism)."""
+    from .. import database, store
+
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
+    assert store.active_devices_probe() == []
+    assert not (tmp_path / "talaria.db").exists()
+
+
+def test_probe_swallows_storage_errors(monkeypatch, tmp_path):
+    from .. import database, store
+
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
+    (tmp_path / "talaria.db").write_bytes(b"garbage that is not sqlite")
+    assert store.active_devices_probe() == []
