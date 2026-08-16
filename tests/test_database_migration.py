@@ -4,7 +4,6 @@ import sqlite3
 import pytest
 
 from .. import database, outbox, store
-from ..database import MigrationError
 
 
 def _redirect(monkeypatch, tmp_path):
@@ -131,103 +130,76 @@ def test_migration_is_idempotent_when_database_exists_without_marker(monkeypatch
     assert [item["id"] for item in outbox.pending("phone-1")] == ["pending-1"]
 
 
-def test_corrupt_legacy_input_fails_loudly_and_is_preserved(monkeypatch, tmp_path):
+def test_corrupt_legacy_input_quarantines_and_keeps_serving(monkeypatch, tmp_path, caplog):
     _redirect(monkeypatch, tmp_path)
     corrupt = "{ definitely not valid json"
     (tmp_path / "devices.json").write_text(corrupt, encoding="utf-8")
 
-    with pytest.raises(MigrationError, match="devices.json"):
-        store.devices()
+    with caplog.at_level("WARNING", logger="talaria"):
+        assert store.devices() == []
 
-    assert (tmp_path / "devices.json").read_text(encoding="utf-8") == corrupt
-    assert not (tmp_path / "devices.json.corrupt").exists()
+    rejected = tmp_path / "devices.json.rejected"
+    assert rejected.read_text(encoding="utf-8") == corrupt
+    assert not (tmp_path / "devices.json").exists()
+    assert any("quarantined" in record.message for record in caplog.records)
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "message"),
+    ("field", "value"),
     [
-        ("token_sha256", "not-a-digest", "64-character SHA-256 digest"),
-        ("active", "false", "must be a boolean"),
-        ("created", "not-a-time", "ISO-8601 timestamp"),
-        ("name", 7, "must be a string"),
+        ("token_sha256", "not-a-digest"),
+        ("active", "false"),
+        ("created", "not-a-time"),
+        ("name", 7),
     ],
 )
-def test_semantically_invalid_device_state_fails_before_marking_migration_complete(
-    monkeypatch, tmp_path, field, value, message
+def test_semantically_invalid_device_file_quarantines_whole_file(
+    monkeypatch, tmp_path, field, value
 ):
     _redirect(monkeypatch, tmp_path)
     devices, _ = _write_legacy(tmp_path)
     devices["devices"][0][field] = value
     (tmp_path / "devices.json").write_text(json.dumps(devices), encoding="utf-8")
 
-    with pytest.raises(MigrationError, match=message):
-        store.devices()
-
-    connection = sqlite3.connect(tmp_path / "talaria.db")
-    try:
-        has_metadata = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_metadata'"
-        ).fetchone()
-        marker = (
-            connection.execute(
-                "SELECT 1 FROM schema_metadata WHERE key = 'legacy_json_migration'"
-            ).fetchone()
-            if has_metadata else None
-        )
-    finally:
-        connection.close()
-    assert marker is None
+    assert store.devices() == []          # device file quarantined...
+    assert (tmp_path / "devices.json.rejected").exists()
+    # ...while the valid outbox file still imported (per-file atomicity).
+    assert [item["id"] for item in outbox.all_pending_for_diagnostics()] == ["pending-1"]
 
 
-def test_semantically_invalid_outbox_metadata_fails_loudly(monkeypatch, tmp_path):
-    _redirect(monkeypatch, tmp_path)
-    _, items = _write_legacy(tmp_path)
-    items["items"][0]["meta"] = {"attempt": 1}
-    (tmp_path / "outbox.json").write_text(json.dumps(items), encoding="utf-8")
-
-    with pytest.raises(MigrationError, match="keys and values must be strings"):
-        outbox.pending("phone-1")
-
-
-
-def test_failed_second_file_rolls_back_then_retries_without_duplication(monkeypatch, tmp_path):
+def test_invalid_outbox_file_does_not_block_device_import(monkeypatch, tmp_path):
     _redirect(monkeypatch, tmp_path)
     legacy_devices, _ = _write_legacy(tmp_path)
-    invalid_outbox = {
-        "items": [
-            {
-                "id": "invalid-item",
-                "kind": "message",
-                "text": 7,
-                "created_at": "2026-08-04T01:02:03+00:00",
-                "meta": {},
-                "delivered_at": None,
-                "active": True,
-            }
-        ]
-    }
-    (tmp_path / "outbox.json").write_text(json.dumps(invalid_outbox), encoding="utf-8")
+    (tmp_path / "outbox.json").write_text('{"items": [{"id": 1}]}', encoding="utf-8")
 
-    with pytest.raises(MigrationError, match="field 'text' must be a string"):
-        store.devices()
-
-    assert json.loads((tmp_path / "outbox.json").read_text(encoding="utf-8")) == invalid_outbox
-    connection = sqlite3.connect(tmp_path / "talaria.db")
-    try:
-        has_devices_table = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'devices'"
-        ).fetchone()
-        imported_count = (
-            connection.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
-            if has_devices_table else 0
-        )
-    finally:
-        connection.close()
-    assert imported_count == 0
-
-    (tmp_path / "outbox.json").write_text(json.dumps({"items": []}), encoding="utf-8")
     migrated = store.devices()
     assert {device["id"] for device in migrated} == {
         device["id"] for device in legacy_devices["devices"]
     }
-    assert len(store.devices()) == len(legacy_devices["devices"])
+    assert (tmp_path / "outbox.json.rejected").exists()
+    assert outbox.all_pending_for_diagnostics() == []
+
+
+def test_fresh_install_writes_no_marker_and_imports_late_json(monkeypatch, tmp_path):
+    _redirect(monkeypatch, tmp_path)
+    assert store.devices() == []          # fresh install: no legacy files, DB created
+
+    legacy_devices, _ = _write_legacy(tmp_path)
+    # Simulate the next process: initialize() is cached per-process (#351-C).
+    database._INITIALIZED.clear()
+    assert {device["id"] for device in store.devices()} == {
+        device["id"] for device in legacy_devices["devices"]
+    }
+
+
+def test_corrupt_database_is_quarantined_and_rebuilt_from_json(monkeypatch, tmp_path, caplog):
+    _redirect(monkeypatch, tmp_path)
+    legacy_devices, _ = _write_legacy(tmp_path)
+    (tmp_path / "talaria.db").write_bytes(b"garbage that is not sqlite")
+
+    with caplog.at_level("WARNING", logger="talaria"):
+        migrated = store.devices()
+    assert {device["id"] for device in migrated} == {
+        device["id"] for device in legacy_devices["devices"]
+    }
+    assert list(tmp_path.glob("talaria.db.corrupt-*"))

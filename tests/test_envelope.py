@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -310,3 +311,20 @@ async def test_query_result_drops_non_string_denial_fields(env):
     })
     assert resolved == {"ok": True}
     assert (await asyncio.wait_for(future, 0.5)) == {"error": "permission_denied"}
+
+
+async def test_dispatch_returns_clean_error_when_storage_raises(env, monkeypatch):
+    """#351-A: the wire never sees a raise — a storage failure inside any
+    handler degrades to a clean error dict, not a 500."""
+    service, _ = env
+    paired = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-1", "device_name": "p"})
+
+    def boom(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(outbox, "pending", boom)
+    result = await service.dispatch({
+        "type": "drain", "auth": paired["device_token"],
+        "device_id": paired["device_id"], "wait": False,
+    })
+    assert result["code"] == "storage_error"

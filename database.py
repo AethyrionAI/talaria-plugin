@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
-from datetime import datetime
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
 from hermes_constants import get_hermes_home, secure_parent_dir
 
+logger = logging.getLogger("talaria")
+
 _BUSY_TIMEOUT_MS = 30_000
 _MIGRATION_KEY = "legacy_json_migration"
+
+_INIT_LOCK = threading.Lock()
+_INITIALIZED: set[str] = set()  # str(database_path) values initialized this process
 
 
 class MigrationError(RuntimeError):
@@ -255,24 +262,72 @@ def _migrate_outbox(connection: sqlite3.Connection, path: Path, rows: list[dict]
             raise MigrationError(f"Cannot migrate {path}: item {legacy['id']} conflicts with existing state")
 
 
-def _migrate_legacy_json(connection: sqlite3.Connection, database_path: Path) -> None:
+def _quarantine_file(path: Path, exc: Exception) -> None:
+    """Preserve a bad legacy file's bytes under a new name and warn loudly.
+
+    Fail-soft is #351-A's whole point: one malformed field must never brick
+    auth and the CLI forever the way a raise out of migration did."""
+    rejected = path.with_name(path.name + ".rejected")
+    try:
+        if not rejected.exists():
+            path.rename(rejected)
+    except OSError:
+        pass
+    logger.warning(
+        "talaria: legacy %s failed migration and was quarantined to %s "
+        "(bytes preserved; see README 'Migration recovery'): %s",
+        path.name, rejected.name, exc,
+    )
+
+
+def _quarantine_database(path: Path, exc: Exception) -> None:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        try:
+            if candidate.exists():
+                candidate.rename(candidate.with_name(f"{candidate.name}.corrupt-{stamp}"))
+        except OSError:
+            pass
+    logger.warning(
+        "talaria: unreadable database quarantined to %s.corrupt-%s and recreated: %s",
+        path.name, stamp, exc,
+    )
+
+
+def _import_file(connection, path: Path, collection_key: str, migrate_fn) -> bool:
+    """Import one legacy file atomically: a validation failure rolls back
+    ONLY this file's rows, quarantines the file, and migration continues.
+    Returns True when the file was present (imported or quarantined)."""
+    if not path.exists():
+        return False
+    connection.execute("SAVEPOINT legacy_file")
+    try:
+        rows = _legacy_rows(path, collection_key)
+        migrate_fn(connection, path, rows)
+        connection.execute("RELEASE SAVEPOINT legacy_file")
+    except MigrationError as exc:
+        connection.execute("ROLLBACK TO SAVEPOINT legacy_file")
+        connection.execute("RELEASE SAVEPOINT legacy_file")
+        _quarantine_file(path, exc)
+    return True
+
+
+def _migrate_legacy_json(connection: sqlite3.Connection, db_path: Path) -> None:
     marker = connection.execute(
         "SELECT value FROM schema_metadata WHERE key = ?", (_MIGRATION_KEY,)
     ).fetchone()
     if marker is not None:
         return
 
-    devices_path = database_path.with_name("devices.json")
-    outbox_path = database_path.with_name("outbox.json")
-    devices = _legacy_rows(devices_path, "devices")
-    items = _legacy_rows(outbox_path, "items")
-    _migrate_devices(connection, devices_path, devices)
-    _migrate_outbox(connection, outbox_path, items)
-
-    if connection.execute("SELECT COUNT(*) FROM devices").fetchone()[0] < len(devices):
-        raise MigrationError(f"Cannot migrate {devices_path}: imported count validation failed")
-    if connection.execute("SELECT COUNT(*) FROM outbox_items").fetchone()[0] < len(items):
-        raise MigrationError(f"Cannot migrate {outbox_path}: imported count validation failed")
+    devices_path = db_path.with_name("devices.json")
+    outbox_path = db_path.with_name("outbox.json")
+    saw_devices = _import_file(connection, devices_path, "devices", _migrate_devices)
+    saw_outbox = _import_file(connection, outbox_path, "items", _migrate_outbox)
+    if not saw_devices and not saw_outbox:
+        # #351-C: nothing to migrate — write NO marker, so legacy JSON
+        # appearing later (old-gateway overlap, restore-from-backup) still
+        # imports at the next initialize().
+        return
 
     connection.execute(
         "INSERT INTO schema_metadata(key, value) VALUES (?, '1')",
@@ -342,31 +397,40 @@ def try_connect_readonly(path: Path | None = None) -> sqlite3.Connection | None:
     return connection
 
 
-def connect(path: Path | None = None) -> sqlite3.Connection:
-    """Open the plugin database, creating schema and migrating on first use."""
-    resolved = path if path is not None else database_path()
-    connection = _open(resolved)
-    try:
-        schema_exists = connection.execute(
-            """
-            SELECT COUNT(*) FROM sqlite_master
-            WHERE type = 'table' AND name IN ('schema_metadata', 'devices', 'outbox_items')
-            """
-        ).fetchone()[0] == 3
-        migration_complete = False
-        if schema_exists:
-            migration_complete = connection.execute(
-                "SELECT 1 FROM schema_metadata WHERE key = ?", (_MIGRATION_KEY,)
-            ).fetchone() is not None
+def initialize(path: Path | None = None) -> None:
+    """One-shot per process: schema creation + legacy import.
 
-        if not schema_exists or not migration_complete:
+    Fail-soft on bad legacy input (quarantine + warning, never a raise);
+    an unreadable database file is itself quarantined and recreated, with
+    the untouched legacy JSON re-imported into the fresh database. Raises
+    only when a database cannot be created at all."""
+    resolved = path if path is not None else database_path()
+    key = str(resolved)
+    with _INIT_LOCK:
+        if key in _INITIALIZED:
+            return
+        try:
+            connection = _open(resolved)
+        except sqlite3.Error as exc:
+            _quarantine_database(resolved, exc)
+            connection = _open(resolved)
+        try:
             connection.execute("BEGIN IMMEDIATE")
             for statement in _SCHEMA_STATEMENTS:
                 connection.execute(statement)
             _migrate_legacy_json(connection, resolved)
             connection.commit()
-    except Exception:
-        connection.rollback()
+        except Exception:
+            connection.rollback()
+            connection.close()
+            raise
         connection.close()
-        raise
-    return connection
+        _INITIALIZED.add(key)
+
+
+def connect(path: Path | None = None) -> sqlite3.Connection:
+    """Open the plugin database, initializing lazily on first use."""
+    resolved = path if path is not None else database_path()
+    if str(resolved) not in _INITIALIZED:
+        initialize(resolved)
+    return _open(resolved)

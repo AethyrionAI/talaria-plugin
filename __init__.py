@@ -15,6 +15,11 @@ from . import admin, tools
 
 
 def register(ctx) -> None:
+    try:
+        from . import database
+        database.initialize()
+    except Exception as exc:  # register must never break gateway load
+        print(f"[talaria] storage initialization deferred: {exc}")
     tools.register_tools(ctx)
     admin.register_cli(ctx)
     try:
