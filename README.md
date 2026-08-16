@@ -19,18 +19,29 @@ existing webhook platform route.
 
 ## Internal installation
 
-Clone the private repository into the active Hermes profile's plugin directory
-under the package name `talaria`, then enable it in `config.yaml`:
+Install an immutable commit through Hermes's native plugin installer, then enable
+the plugin. Private-repository access uses the operator's existing GitHub
+credentials:
+
+```bash
+hermes plugins install AethyrionAI/talaria-plugin \
+  --ref <full-40-character-commit-sha> \
+  --no-enable
+hermes plugins enable talaria
+```
+
+The repository also provides the `talaria-hermes-plugin` Python distribution
+and a `hermes_agent.plugins` entry point for controlled pip/Nix packaging. It is
+not published to PyPI while the Talaria application remains private.
+
+Manual directory installs remain supported: place the checkout anywhere under
+the active profile's `plugins/` directory and enable the manifest name:
 
 ```yaml
 plugins:
   enabled:
     - talaria
 ```
-
-The `talaria` directory/package name remains required by the current plugin and
-test import layout. Do not rename the checkout unless conventional packaging is
-added later.
 
 ## Administration
 
@@ -114,22 +125,19 @@ targeted rows.
 
 ## Running tests
 
-The repository is not yet conventionally packaged. Expose the checkout under a
-temporary parent using the package name `talaria`, then invoke pytest directly
-from that parent:
+The implementation lives in the conventional `talaria/` package. From the
+repository root, run:
 
 ```bash
-mkdir -p /tmp/talaria-plugin-test-parent
-ln -s "$PWD" /tmp/talaria-plugin-test-parent/talaria
-cd /tmp/talaria-plugin-test-parent
-~/.hermes/hermes-agent/venv/bin/pytest talaria/tests/ -q
+python -m pytest tests/ -q
+python -m compileall -q talaria
+hermes plugins doctor . --ci
 ```
 
-Do not run `python -m pytest` from the plugin root. That inserts the plugin root
-at `sys.path[0]`, where this repository's `tools.py` shadows Hermes's top-level
-`tools` package when `gateway.*` imports. Production plugin loading is immune:
-Hermes loads plugins under a package namespace without inserting the plugin
-root into `sys.path`.
+Build verification should also create and inspect a wheel from a temporary copy
+of the checkout so setuptools artifacts never pollute the source tree. The wheel
+must expose `talaria -> talaria` in the `hermes_agent.plugins` entry-point group
+and must not contain the test suite.
 
 All persistence tests use temporary directories. They must never point at a
 real `<HERMES_HOME>/talaria` directory or contact a real phone.

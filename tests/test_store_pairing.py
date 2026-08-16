@@ -2,7 +2,7 @@ import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import database, store
+from talaria import database, store
 
 
 def _redirect(monkeypatch, tmp_path):
@@ -65,7 +65,7 @@ def test_concurrent_pairings_preserve_every_device(monkeypatch, tmp_path):
 def test_repair_rehomes_pending_targeted_rows(monkeypatch, tmp_path):
     """351-D RED->GREEN: re-pairing must not orphan queued messages."""
     _redirect(monkeypatch, tmp_path)
-    from .. import outbox
+    from talaria import outbox
     old_id, _ = store.create_paired_device("install-1", "phone")
     item = outbox.append("queued while offline", target_device_id=old_id)
     new_id, _ = store.create_paired_device("install-1", "phone")
@@ -77,7 +77,7 @@ def test_repair_rehomes_pending_targeted_rows(monkeypatch, tmp_path):
 def test_repair_releases_legacy_claims_of_inactive_devices(monkeypatch, tmp_path):
     """351-D RED->GREEN: a claim held by a rotated-away device is released."""
     _redirect(monkeypatch, tmp_path)
-    from .. import database, outbox
+    from talaria import database, outbox
     old_id, _ = store.create_paired_device("install-1", "phone")
     connection = database.connect()
     try:

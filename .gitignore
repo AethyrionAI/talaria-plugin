@@ -1,5 +1,20 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Plugin runtime state
+*.db
+*.db-shm
+*.db-wal
+
+# macOS
 .DS_Store
 
 # SDD review scratch (controller-managed)

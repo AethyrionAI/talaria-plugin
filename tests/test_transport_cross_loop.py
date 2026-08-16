@@ -24,7 +24,7 @@ import asyncio
 import threading
 import time
 
-from ..transport import TransportHub
+from talaria.transport import TransportHub
 
 # Deliberately generous: the fix should land in milliseconds. Anything near
 # HOLD means the wake did not release the park.

@@ -14,8 +14,8 @@ content= as a keyword).
 import inspect
 import sqlite3
 
-from .. import database, outbox, platform_adapter, store
-from ..platform_adapter import TalariaPlatformAdapter
+from talaria import database, outbox, platform_adapter, store
+from talaria.platform_adapter import TalariaPlatformAdapter
 
 
 def test_send_signature_matches_base_platform_adapter_contract():

@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from .. import database, outbox, store
+from talaria import database, outbox, store
 
 
 def _redirect(monkeypatch, tmp_path):

@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from ..transport import TransportHub
+from talaria.transport import TransportHub
 
 
 def test_is_live_tracks_touch_within_window():

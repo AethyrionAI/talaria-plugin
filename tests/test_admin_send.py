@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from .. import admin, database, outbox, store
+from talaria import admin, database, outbox, store
 
 
 def _redirect(monkeypatch, tmp_path):

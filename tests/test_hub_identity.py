@@ -41,18 +41,18 @@ import importlib.util
 import sys
 import types
 
-from .. import tools
-from ..envelope import EnvelopeService
-from ..transport import HUB
+from talaria import tools
+from talaria.envelope import EnvelopeService
+from talaria.transport import HUB
 
 
 def _package_name() -> str:
-    return __package__.rsplit(".", 1)[0]
+    return "talaria"
 
 
 def test_late_and_early_binders_agree_today():
     """263-D, baseline. The two binding sites reach one object."""
-    from .. import platform_adapter
+    from talaria import platform_adapter
 
     assert tools._hub() is HUB
     assert platform_adapter.HUB is HUB, (
@@ -67,7 +67,7 @@ def test_the_hub_an_envelope_service_holds_is_the_hub_the_tool_reads():
     same instance. The adapter itself needs a registered gateway Platform
     enum member, so this pins the reference it is handed rather than the
     instantiation."""
-    from .. import outbox, platform_adapter, store
+    from talaria import outbox, platform_adapter, store
 
     service = EnvelopeService(
         api_key_provider=lambda: "",
@@ -103,7 +103,7 @@ def test_hub_survives_a_loader_faithful_package_reload():
         sys.modules[package] = module
         spec.loader.exec_module(module)
 
-        from .. import platform_adapter
+        from talaria import platform_adapter
 
         assert tools._hub() is original_hub, (
             "a package reload gave tools._hub() a NEW hub — the late binder "

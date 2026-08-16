@@ -3,9 +3,9 @@ import sqlite3
 
 import pytest
 
-from .. import database, outbox, store
-from ..envelope import EnvelopeService
-from ..transport import TransportHub
+from talaria import database, outbox, store
+from talaria.envelope import EnvelopeService
+from talaria.transport import TransportHub
 
 API_KEY = "test-api-key-64chars-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 

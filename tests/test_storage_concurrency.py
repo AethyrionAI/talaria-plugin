@@ -2,13 +2,13 @@ import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from threading import Barrier
 
-from .. import database, outbox, store
-from ..database import connect
+from talaria import database, outbox, store
+from talaria.database import connect
 
 
 def _process_append(home: str, index: int) -> tuple[str, str]:
     os.environ["HERMES_HOME"] = home
-    from .. import outbox as process_outbox
+    from talaria import outbox as process_outbox
 
     item = process_outbox.append(f"process-item-{index}")
     return item["id"], item["text"]
@@ -16,7 +16,7 @@ def _process_append(home: str, index: int) -> tuple[str, str]:
 
 def _process_pair(home: str, index: int) -> tuple[str, str]:
     os.environ["HERMES_HOME"] = home
-    from .. import store as process_store
+    from talaria import store as process_store
 
     device_id, _ = process_store.create_paired_device(
         f"process-install-{index}", f"process-device-{index}"

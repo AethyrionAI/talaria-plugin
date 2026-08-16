@@ -1,7 +1,7 @@
-from .. import database, outbox, store
-from ..envelope import EnvelopeService
-from ..platform_adapter import TalariaPlatformAdapter
-from ..transport import TransportHub
+from talaria import database, outbox, store
+from talaria.envelope import EnvelopeService
+from talaria.platform_adapter import TalariaPlatformAdapter
+from talaria.transport import TransportHub
 
 API_KEY = "smoke-api-key-64chars-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
