@@ -30,12 +30,10 @@ hermes plugins install AethyrionAI/talaria-plugin \
 hermes plugins enable talaria
 ```
 
-The repository also provides the `talaria-hermes-plugin` Python distribution
-and a `hermes_agent.plugins` entry point for controlled pip/Nix packaging. It is
-not published to PyPI while the Talaria application remains private.
-
-Manual directory installs remain supported: place the checkout anywhere under
-the active profile's `plugins/` directory and enable the manifest name:
+Manual directory installs remain supported: place the checkout at
+`plugins/<name>/` or one category level deep (`plugins/<category>/<name>/`) —
+Hermes's plugin scanner caps discovery at two path segments — and enable the
+manifest name:
 
 ```yaml
 plugins:
@@ -129,15 +127,13 @@ The implementation lives in the conventional `talaria/` package. From the
 repository root, run:
 
 ```bash
-python -m pytest tests/ -q
-python -m compileall -q talaria
+pytest tests/ -q
+python -m compileall -q .
 hermes plugins doctor . --ci
 ```
 
-Build verification should also create and inspect a wheel from a temporary copy
-of the checkout so setuptools artifacts never pollute the source tree. The wheel
-must expose `talaria -> talaria` in the `hermes_agent.plugins` entry-point group
-and must not contain the test suite.
+Both `pytest` and `python -m pytest` work from the repository root
+(`pytest.ini` carries `pythonpath = .`).
 
 All persistence tests use temporary directories. They must never point at a
 real `<HERMES_HOME>/talaria` directory or contact a real phone.

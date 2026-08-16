@@ -4,11 +4,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 
-# Packaging
-build/
-dist/
-*.egg-info/
-
 # Plugin runtime state
 *.db
 *.db-shm

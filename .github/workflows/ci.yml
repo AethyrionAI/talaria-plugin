@@ -31,40 +31,13 @@ jobs:
           python -m pip install -e /tmp/hermes-agent
 
       - name: Test through the conventional package layout
-        run: python -m pytest tests/ -q
+        run: |
+          pytest tests/ -q
+          python -m pytest tests/ -q
 
       - name: Compile all Python modules
-        run: python -m compileall -q talaria tests
+        run: python -m compileall -q .
 
       - name: Validate the directory plugin
         run: hermes plugins doctor . --ci
 
-      - name: Build and verify the pip entry-point distribution
-        run: |
-          mkdir -p /tmp/talaria-wheel-source /tmp/talaria-wheel-dist
-          git archive HEAD | tar -x -C /tmp/talaria-wheel-source
-          python -m pip wheel --no-deps \
-            --wheel-dir /tmp/talaria-wheel-dist \
-            /tmp/talaria-wheel-source
-          python -m pip install --no-deps /tmp/talaria-wheel-dist/*.whl
-          cd /tmp
-          python - <<'PY'
-          import importlib.metadata
-          import zipfile
-          from pathlib import Path
-
-          entries = [
-              entry
-              for entry in importlib.metadata.entry_points(group="hermes_agent.plugins")
-              if entry.name == "talaria"
-          ]
-          assert len(entries) == 1, entries
-          module = entries[0].load()
-          assert callable(module.register)
-
-          [wheel] = Path("/tmp/talaria-wheel-dist").glob("*.whl")
-          with zipfile.ZipFile(wheel) as archive:
-              names = set(archive.namelist())
-          assert "talaria/__init__.py" in names
-          assert not any(name.startswith("tests/") for name in names)
-          PY
