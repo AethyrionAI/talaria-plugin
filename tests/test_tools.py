@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from .. import tools
-from ..transport import TransportHub
+from talaria import tools
+from talaria.transport import TransportHub
 
 
 @pytest.fixture
@@ -165,7 +165,7 @@ def test_query_timeout_exceeds_the_drain_hold_by_a_margin():
     """
     import inspect
 
-    from ..envelope import EnvelopeService
+    from talaria.envelope import EnvelopeService
 
     hold = inspect.signature(EnvelopeService.__init__).parameters["hold_seconds"].default
     assert tools._QUERY_TIMEOUT >= hold + 10.0, (
@@ -178,7 +178,7 @@ def test_query_timeout_exceeds_the_drain_hold_by_a_margin():
 def test_probe_on_virgin_profile_creates_no_database(monkeypatch, tmp_path):
     """351-I: the honest-unreachable prose must not create durable state as
     a side effect of a read (the accidental-DB incident's mechanism)."""
-    from .. import database, store
+    from talaria import database, store
 
     monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
     assert store.active_devices_probe() == []
@@ -186,7 +186,7 @@ def test_probe_on_virgin_profile_creates_no_database(monkeypatch, tmp_path):
 
 
 def test_probe_swallows_storage_errors(monkeypatch, tmp_path):
-    from .. import database, store
+    from talaria import database, store
 
     monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
     (tmp_path / "talaria.db").write_bytes(b"garbage that is not sqlite")

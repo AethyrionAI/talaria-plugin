@@ -1,34 +1,17 @@
-"""Talaria phone bridge plugin for Hermes.
+"""Directory-plugin shim for the packaged Talaria implementation.
 
-Phase 1 of the four-phase arc (Talaria-27 OPEN_ITEMS #251): tools + admin.
-2A adds the webhook-mode platform adapter on the gateway's existing HTTP
-listener; later slices migrate remote turns to the runs plane and
-decommission the legacy relay/connector sidecars.
-
-The platform import stays inside ``register`` (not at module level) so
-the tools/CLI half never breaks if gateway modules are unavailable in a
-bare CLI context — tools + CLI must survive even when platform
-registration cannot proceed.
+Hermes's directory loader execs this file with ``__package__`` set, so the
+relative import is the production path. The bare-module branch is for
+pytest, which imports a rootdir ``__init__.py`` during collection (observed
+under pytest 9.1) with ``__package__`` empty — there the absolute import
+resolves the sibling ``talaria/`` package via the repository root on
+``sys.path``. No pip distribution of this plugin exists (removed with
+#351-K), so the absolute form cannot bind anything else.
 """
 
-from . import admin, tools
+if __package__:
+    from .talaria import register
+else:
+    from talaria import register
 
-
-def register(ctx) -> None:
-    try:
-        from . import database
-        database.initialize()
-    except Exception as exc:  # register must never break gateway load
-        print(f"[talaria] storage initialization deferred: {exc}")
-    tools.register_tools(ctx)
-    admin.register_cli(ctx)
-    try:
-        from .platform_adapter import TalariaPlatformAdapter
-        ctx.register_platform(
-            name="talaria",
-            label="Talaria",
-            adapter_factory=lambda cfg: TalariaPlatformAdapter(cfg),
-            check_fn=lambda: True,
-        )
-    except Exception as exc:  # pragma: no cover — CLI-context guard
-        print(f"[talaria] platform registration skipped: {exc}")
+__all__ = ["register"]

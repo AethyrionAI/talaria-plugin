@@ -19,18 +19,27 @@ existing webhook platform route.
 
 ## Internal installation
 
-Clone the private repository into the active Hermes profile's plugin directory
-under the package name `talaria`, then enable it in `config.yaml`:
+Install an immutable commit through Hermes's native plugin installer, then enable
+the plugin. Private-repository access uses the operator's existing GitHub
+credentials:
+
+```bash
+hermes plugins install AethyrionAI/talaria-plugin \
+  --ref <full-40-character-commit-sha> \
+  --no-enable
+hermes plugins enable talaria
+```
+
+Manual directory installs remain supported: place the checkout at
+`plugins/<name>/` or one category level deep (`plugins/<category>/<name>/`) —
+Hermes's plugin scanner caps discovery at two path segments — and enable the
+manifest name:
 
 ```yaml
 plugins:
   enabled:
     - talaria
 ```
-
-The `talaria` directory/package name remains required by the current plugin and
-test import layout. Do not rename the checkout unless conventional packaging is
-added later.
 
 ## Administration
 
@@ -114,22 +123,17 @@ targeted rows.
 
 ## Running tests
 
-The repository is not yet conventionally packaged. Expose the checkout under a
-temporary parent using the package name `talaria`, then invoke pytest directly
-from that parent:
+The implementation lives in the conventional `talaria/` package. From the
+repository root, run:
 
 ```bash
-mkdir -p /tmp/talaria-plugin-test-parent
-ln -s "$PWD" /tmp/talaria-plugin-test-parent/talaria
-cd /tmp/talaria-plugin-test-parent
-~/.hermes/hermes-agent/venv/bin/pytest talaria/tests/ -q
+pytest tests/ -q
+python -m compileall -q .
+hermes plugins doctor . --ci
 ```
 
-Do not run `python -m pytest` from the plugin root. That inserts the plugin root
-at `sys.path[0]`, where this repository's `tools.py` shadows Hermes's top-level
-`tools` package when `gateway.*` imports. Production plugin loading is immune:
-Hermes loads plugins under a package namespace without inserting the plugin
-root into `sys.path`.
+Both `pytest` and `python -m pytest` work from the repository root
+(`pytest.ini` carries `pythonpath = .`).
 
 All persistence tests use temporary directories. They must never point at a
 real `<HERMES_HOME>/talaria` directory or contact a real phone.

@@ -10,8 +10,8 @@ instrument that silently stops reporting is worse than none.
 import asyncio
 import logging
 
-from .. import admin, tools
-from ..transport import TransportHub
+from talaria import admin, tools
+from talaria.transport import TransportHub
 
 
 def test_counters_start_at_zero_and_are_all_named():
@@ -104,7 +104,7 @@ async def test_check_fn_logs_the_hub_it_read_and_the_liveness_inputs(caplog, mon
 async def test_module_load_stamp_names_the_hub_instance():
     """Two of these in one process IS the split hub, printed rather than
     inferred. Pinned by content so a refactor can't quietly drop it."""
-    from .. import transport
+    from talaria import transport
 
     source = (transport.__file__ or "")
     assert source
@@ -122,7 +122,7 @@ def test_status_reports_the_hub_and_says_when_counters_are_process_local(capsys)
 
 
 def test_status_surfaces_a_missed_wake_when_one_happened(capsys, monkeypatch):
-    from .. import transport
+    from talaria import transport
 
     hub = TransportHub()
     hub.counters["wakes_missed"] = 2
