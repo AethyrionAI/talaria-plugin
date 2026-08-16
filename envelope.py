@@ -5,7 +5,9 @@ route verifies the HEADER (authentication — bad creds 401 before
 dispatch); dispatch authorizes from the payload's `auth` field (spec
 Addendum): pair requires the API key, device ops require the device's
 own token bound to the claimed device_id. Every failure is a clean
-error dict — the route 500s on raised exceptions, so nothing raises.
+error dict — the route 500s on raised exceptions, so dispatch() wraps
+its handlers in a catch-all and verify() guards its storage call
+(#351-A): the promise is enforced here, not assumed of storage.
 
 Payload fields arrive as parsed JSON from an untrusted HTTP body, so
 their Python types are not guaranteed to match the documented shape
@@ -18,8 +20,12 @@ exception; see `_text()` and the isinstance checks below.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
+import logging
 import time
+
+_logger = logging.getLogger("talaria")
 
 
 def _bearer(auth_header: str) -> str:
@@ -70,7 +76,14 @@ class EnvelopeService:
         key = self._api_key() or ""
         if key and _ct_equal(token, key):
             return True, ""
-        if self._store.device_for_token(token) is not None:
+        try:
+            device = self._store.device_for_token(token)
+        except Exception:
+            # #351-A: a storage failure on the UNAUTHENTICATED surface must
+            # fail closed as a clean 401, never as a raise into the route.
+            _logger.exception("talaria: verify failed on a storage error")
+            return False, "storage_error"
+        if device is not None:
             return True, ""
         return False, "invalid_talaria_auth"
 
@@ -81,11 +94,11 @@ class EnvelopeService:
         key = self._api_key() or ""
         return bool(key) and _ct_equal(value, key)
 
-    def _device_authorized(self, payload: dict) -> dict | None:
+    async def _device_authorized(self, payload: dict) -> dict | None:
         auth = payload.get("auth")
         if not isinstance(auth, str):
             return None
-        device = self._store.device_for_token(auth)
+        device = await asyncio.to_thread(self._store.device_for_token, auth)
         if device is None:
             return None
         device_id = device.get("id")
@@ -107,7 +120,14 @@ class EnvelopeService:
         }.get(event_type) if isinstance(event_type, str) else None
         if handler is None:
             return {"error": "Unknown event type", "code": "unknown_event_type"}
-        return await handler(payload)
+        try:
+            return await handler(payload)
+        except Exception:
+            # #351-A: storage failures degrade to a clean error dict; the
+            # docstring's "nothing raises" promise is enforced here rather
+            # than assumed of every storage call.
+            _logger.exception("talaria: %s handler failed on a storage error", event_type)
+            return {"error": "Internal storage failure", "code": "storage_error"}
 
     async def _pair(self, payload: dict) -> dict:
         if not self._is_api_key(payload.get("auth")):
@@ -115,12 +135,13 @@ class EnvelopeService:
         install_id = _text(payload.get("install_id"))
         if not install_id:
             return {"error": "install_id is required", "code": "missing_install_id"}
-        device_id, token = self._store.create_paired_device(
-            install_id, _text(payload.get("device_name"))
+        device_id, token = await asyncio.to_thread(
+            self._store.create_paired_device,
+            install_id, _text(payload.get("device_name")),
         )
         return {"device_id": device_id, "device_token": token}
 
-    def _touch(self, device_id: str) -> None:
+    async def _touch(self, device_id: str) -> None:
         self._hub.touch(device_id)
         now = time.monotonic()
         # -inf, not 0.0: time.monotonic() is seconds-since-an-arbitrary-
@@ -131,32 +152,36 @@ class EnvelopeService:
         last = self._last_store_touch.get(device_id, float("-inf"))
         if now - last >= self._touch_throttle:
             self._last_store_touch[device_id] = now
-            self._store.touch_device(device_id)
+            await asyncio.to_thread(self._store.touch_device, device_id)
 
     async def _drain(self, payload: dict) -> dict:
-        device = self._device_authorized(payload)
+        device = await self._device_authorized(payload)
         if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
         device_id = device["id"]
-        self._touch(device_id)
-        items = self._outbox.pending()
+        await self._touch(device_id)
+        items = await asyncio.to_thread(self._outbox.pending, device_id)
         queries = self._hub.take_queries(device_id)
         if not items and not queries and payload.get("wait"):
             await self._hub.park(device_id, timeout=self._hold)
-            self._touch(device_id)
-            items = self._outbox.pending()
+            await self._touch(device_id)
+            items = await asyncio.to_thread(self._outbox.pending, device_id)
             queries = self._hub.take_queries(device_id)
         return {"items": items, "queries": queries}
 
     async def _ack(self, payload: dict) -> dict:
-        if self._device_authorized(payload) is None:
+        device = await self._device_authorized(payload)
+        if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
         raw_ids = payload.get("item_ids")
         item_ids = [i for i in raw_ids if isinstance(i, str)] if isinstance(raw_ids, list) else []
-        return {"acked": self._outbox.mark_delivered(item_ids)}
+        acked = await asyncio.to_thread(
+            self._outbox.mark_delivered, item_ids, device_id=device["id"]
+        )
+        return {"acked": acked}
 
     async def _query_result(self, payload: dict) -> dict:
-        device = self._device_authorized(payload)
+        device = await self._device_authorized(payload)
         if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
         query_id = payload.get("query_id")
@@ -178,8 +203,8 @@ class EnvelopeService:
         return {"ok": bool(resolved)}
 
     async def _unpair(self, payload: dict) -> dict:
-        device = self._device_authorized(payload)
+        device = await self._device_authorized(payload)
         if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
-        self._store.deactivate(device["id"])
+        await asyncio.to_thread(self._store.deactivate, device["id"])
         return {"ok": True}

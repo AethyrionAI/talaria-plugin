@@ -7,6 +7,7 @@ only hashes persist (see store.py).
 from __future__ import annotations
 
 from . import store
+from .database import database_path
 
 
 def setup_cli(subparser) -> None:
@@ -18,11 +19,17 @@ def setup_cli(subparser) -> None:
         "device_id", nargs="?", default=None,
         help="Device id from `hermes talaria status` (omit to deactivate all)",
     )
-    send = subs.add_parser("send", help="Queue a message for the phone's next drain")
-    send.add_argument("text", nargs="*", help="Message text to queue for the phone")
+    send = subs.add_parser("send", help="Queue a message for a specific active Talaria device")
+    send.add_argument("text", nargs="*", help="Message text to queue for the device")
+    target = send.add_mutually_exclusive_group()
+    target.add_argument("--device", help="Target one active device id")
+    target.add_argument(
+        "--all", dest="send_all", action="store_true",
+        help="Fan out one independently acknowledged delivery per active device",
+    )
 
 
-def handle_cli(args) -> None:
+def handle_cli(args) -> int:
     cmd = getattr(args, "talaria_cmd", None)
     if cmd == "pair":
         device_id, token = store.create_pairing()
@@ -33,35 +40,82 @@ def handle_cli(args) -> None:
         print()
         print("Note: the Talaria app can also pair itself directly against the")
         print("platform adapter — this command remains the manual fallback path.")
+        print("CLI-paired records do not auto-rotate when the app re-pairs;")
+        print("unpair this id manually if the app later pairs itself.")
+        return 0
     elif cmd == "unpair":
         count = store.deactivate(getattr(args, "device_id", None))
         if count:
             print(f"Deactivated {count} device record(s). Records are kept for rollback.")
-        else:
-            print("No matching active device record.")
+            return 0
+        print("No matching active device record.")
+        return 1
     elif cmd == "send":
         from . import outbox
         text = " ".join(getattr(args, "text", []) or []).strip()
         if not text:
-            print("Usage: hermes talaria send <text>")
-            return
-        item = outbox.append(text, meta={"source": "cli"})
-        print(f"Queued outbox item {item['id']} — delivered on the phone's next drain.")
+            print("Usage: hermes talaria send [--device <id> | --all] <text>")
+            return 1
+
+        active = store.active_devices()
+        requested_device = getattr(args, "device", None)
+        if getattr(args, "send_all", False):
+            if not active:
+                print("No active Talaria devices. Pair a device before sending.")
+                return 1
+            try:
+                items = outbox.append_for_devices(
+                    text,
+                    [device["id"] for device in active],
+                    meta={"source": "cli"},
+                )
+            except outbox.UnknownTargetError as exc:
+                print(f"Send failed: {exc}. No message was queued.")
+                return 1
+            print(f"Queued {len(items)} targeted outbox item(s), one per active device.")
+            return 0
+
+        if requested_device is None:
+            if not active:
+                print("No active Talaria devices. Pair a device before sending.")
+                return 1
+            if len(active) > 1:
+                print("Multiple active devices; choose --device <id> or --all. No message was queued.")
+                return 1
+            requested_device = active[0]["id"]
+
+        try:
+            item = outbox.append(
+                text,
+                meta={"source": "cli"},
+                target_device_id=requested_device,
+            )
+        except outbox.UnknownTargetError as exc:
+            print(f"Send failed: {exc}. No message was queued.")
+            return 1
+        print(f"Queued outbox item {item['id']} for device {requested_device}.")
+        return 0
     else:  # status is also the default
         records = store.devices()
         active = [d for d in records if d.get("active")]
-        print("Talaria plugin — tools + admin + webhook platform adapter (2A)")
-        print(f"Store: {store._store_path()}")
+        print("Talaria plugin — tools + admin + webhook platform adapter")
+        print(f"Store: {database_path()}")
         if not records:
             print("No paired devices. Run `hermes talaria pair` to create one.")
             _print_transport_counters()
-            return
+            return 0
         print(f"{len(active)} active / {len(records)} total device record(s):")
         for device in records:
             state = "active" if device.get("active") else "inactive"
             last_seen = device.get("last_seen") or "—"
-            print(f"  {device['id']}  {state:8}  created {device.get('created', '—')}  last seen {last_seen}")
+            name = device.get("name") or "—"
+            install = device.get("install_id") or "—"
+            print(
+                f"  {device['id']}  {state:8}  {name}  install {install}  "
+                f"created {device.get('created', '—')}  last seen {last_seen}"
+            )
         _print_transport_counters()
+        return 0
 
 
 def _print_transport_counters() -> None:

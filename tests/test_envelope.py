@@ -1,8 +1,9 @@
 import asyncio
+import sqlite3
 
 import pytest
 
-from .. import outbox, store
+from .. import database, outbox, store
 from ..envelope import EnvelopeService
 from ..transport import TransportHub
 
@@ -11,8 +12,7 @@ API_KEY = "test-api-key-64chars-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 @pytest.fixture
 def env(monkeypatch, tmp_path):
-    monkeypatch.setattr(store, "_store_path", lambda: tmp_path / "devices.json")
-    monkeypatch.setattr(outbox, "_outbox_path", lambda: tmp_path / "outbox.json")
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
     hub = TransportHub()
     service = EnvelopeService(
         api_key_provider=lambda: API_KEY,
@@ -65,6 +65,37 @@ async def test_drain_wrong_token_rejected(env):
     assert crossed["code"] == "device_auth_mismatch"
 
 
+@pytest.mark.parametrize("non_target_drains_first", [True, False])
+async def test_targeted_item_drains_only_to_recipient_regardless_of_order(env, non_target_drains_first):
+    service, _ = env
+    phone = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "phone", "device_name": "phone"})
+    ipad = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "ipad", "device_name": "ipad"})
+    item = outbox.append("phone only", target_device_id=phone["device_id"])
+    payloads = {
+        "phone": {"type": "drain", "auth": phone["device_token"], "device_id": phone["device_id"], "wait": False},
+        "ipad": {"type": "drain", "auth": ipad["device_token"], "device_id": ipad["device_id"], "wait": False},
+    }
+    order = ["ipad", "phone"] if non_target_drains_first else ["phone", "ipad"]
+    results = {name: await service.dispatch(payloads[name]) for name in order}
+
+    assert [row["id"] for row in results["phone"]["items"]] == [item["id"]]
+    assert results["ipad"]["items"] == []
+
+
+async def test_non_target_device_cannot_ack_targeted_item(env):
+    service, _ = env
+    phone = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "phone", "device_name": "phone"})
+    ipad = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "ipad", "device_name": "ipad"})
+    item = outbox.append("phone only", target_device_id=phone["device_id"])
+
+    spoofed = await service.dispatch({
+        "type": "ack", "auth": ipad["device_token"], "device_id": ipad["device_id"],
+        "item_ids": [item["id"]],
+    })
+    assert spoofed == {"acked": []}
+    assert [row["id"] for row in outbox.pending(phone["device_id"])] == [item["id"]]
+
+
 async def test_drain_longpoll_wakes_on_send(env):
     service, hub = env
     paired = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-1", "device_name": "p"})
@@ -86,13 +117,13 @@ async def test_drain_longpoll_wakes_on_send(env):
 async def test_ack_marks_delivered(env):
     service, _ = env
     paired = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-1", "device_name": "p"})
-    item = outbox.append("one")
+    item = outbox.append("one", target_device_id=paired["device_id"])
     result = await service.dispatch({
         "type": "ack", "auth": paired["device_token"],
         "device_id": paired["device_id"], "item_ids": [item["id"]],
     })
     assert result == {"acked": [item["id"]]}
-    assert outbox.pending() == []
+    assert outbox.pending(paired["device_id"]) == []
 
 
 async def test_query_flows_through_drain_and_result(env):
@@ -178,7 +209,7 @@ async def test_device_ops_non_string_auth_is_clean_error(env):
 async def test_ack_non_list_and_mixed_type_item_ids_is_clean_error(env):
     service, _ = env
     paired = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-1", "device_name": "p"})
-    item = outbox.append("one")
+    item = outbox.append("one", target_device_id=paired["device_id"])
     result = await service.dispatch({
         "type": "ack", "auth": paired["device_token"],
         "device_id": paired["device_id"], "item_ids": 5,
@@ -280,3 +311,72 @@ async def test_query_result_drops_non_string_denial_fields(env):
     })
     assert resolved == {"ok": True}
     assert (await asyncio.wait_for(future, 0.5)) == {"error": "permission_denied"}
+
+
+async def test_dispatch_returns_clean_error_when_storage_raises(env, monkeypatch):
+    """#351-A: the wire never sees a raise — a storage failure inside any
+    handler degrades to a clean error dict, not a 500."""
+    service, _ = env
+    paired = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-1", "device_name": "p"})
+
+    def boom(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(outbox, "pending", boom)
+    result = await service.dispatch({
+        "type": "drain", "auth": paired["device_token"],
+        "device_id": paired["device_id"], "wait": False,
+    })
+    assert result["code"] == "storage_error"
+
+
+async def test_drain_does_not_stall_the_event_loop_under_a_held_write_lock(env, monkeypatch, tmp_path):
+    """351-E RED->GREEN pin of the measured 3.05s loop freeze: with a writer
+    squatting on the database, a drain must neither raise nor stop the
+    loop's heart. (The holder owns its connection entirely inside its own
+    thread — sqlite3 connections are not cross-thread.)"""
+    import threading
+
+    service, _ = env
+    paired = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-1", "device_name": "p"})
+
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        holder = database.connect()
+        try:
+            holder.execute("BEGIN IMMEDIATE")
+            locked.set()
+            release.wait(2.0)
+            holder.rollback()
+        finally:
+            holder.close()
+
+    thread = threading.Thread(target=hold, daemon=True)
+    thread.start()
+    assert locked.wait(5.0)
+    try:
+        gaps = []
+
+        async def heartbeat():
+            loop = asyncio.get_running_loop()
+            last = loop.time()
+            for _ in range(30):
+                await asyncio.sleep(0.01)
+                now = loop.time()
+                gaps.append(now - last)
+                last = now
+
+        beat = asyncio.ensure_future(heartbeat())
+        result = await service.dispatch({
+            "type": "drain", "auth": paired["device_token"],
+            "device_id": paired["device_id"], "wait": False,
+        })
+        await beat
+    finally:
+        release.set()
+        thread.join(timeout=6.0)
+
+    assert result == {"items": [], "queries": []}
+    assert max(gaps) < 0.25, f"event loop stalled {max(gaps):.3f}s"
