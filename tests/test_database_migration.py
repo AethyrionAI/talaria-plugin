@@ -3,13 +3,12 @@ import sqlite3
 
 import pytest
 
-from .. import outbox, store
-from ..database import MigrationError, connect
+from .. import database, outbox, store
+from ..database import MigrationError
 
 
 def _redirect(monkeypatch, tmp_path):
-    monkeypatch.setattr(store, "_store_path", lambda: tmp_path / "devices.json")
-    monkeypatch.setattr(outbox, "_outbox_path", lambda: tmp_path / "outbox.json")
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
 
 
 def _write_legacy(tmp_path):
@@ -92,10 +91,25 @@ def test_first_use_migrates_devices_and_outbox_in_one_transaction(monkeypatch, t
 def test_migration_is_idempotent_when_database_exists_without_marker(monkeypatch, tmp_path):
     _redirect(monkeypatch, tmp_path)
     legacy_devices, _ = _write_legacy(tmp_path)
-    database_path = tmp_path / "talaria.db"
 
-    connection = connect(database_path, migrate_legacy=False)
+    # A database that already holds one of the legacy rows but carries no
+    # migration marker (e.g. an interrupted earlier import).
+    connection = sqlite3.connect(tmp_path / "talaria.db")
     try:
+        connection.execute(
+            """
+            CREATE TABLE devices (
+                id TEXT PRIMARY KEY,
+                token_sha256 TEXT NOT NULL,
+                install_id TEXT,
+                name TEXT,
+                created TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                last_seen TEXT,
+                deactivated TEXT
+            )
+            """
+        )
         first = legacy_devices["devices"][0]
         connection.execute(
             """
@@ -108,6 +122,7 @@ def test_migration_is_idempotent_when_database_exists_without_marker(monkeypatch
                 first["created"], 1, first["last_seen"], None,
             ),
         )
+        connection.commit()
     finally:
         connection.close()
 

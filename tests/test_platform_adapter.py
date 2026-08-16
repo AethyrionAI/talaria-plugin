@@ -13,7 +13,7 @@ content= as a keyword).
 
 import inspect
 
-from .. import outbox, platform_adapter, store
+from .. import database, outbox, platform_adapter, store
 from ..platform_adapter import TalariaPlatformAdapter
 
 
@@ -23,8 +23,7 @@ def test_send_signature_matches_base_platform_adapter_contract():
 
 
 async def test_send_targets_exact_active_device(monkeypatch, tmp_path):
-    monkeypatch.setattr(store, "_store_path", lambda: tmp_path / "devices.json")
-    monkeypatch.setattr(outbox, "_outbox_path", lambda: tmp_path / "outbox.json")
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
     wake_calls = []
     monkeypatch.setattr(platform_adapter.HUB, "wake", lambda device_id=None: wake_calls.append(device_id))
     phone_id, _ = store.create_paired_device("phone-install", "phone")
@@ -40,8 +39,7 @@ async def test_send_targets_exact_active_device(monkeypatch, tmp_path):
 
 
 async def test_send_unknown_or_inactive_target_fails_without_queueing(monkeypatch, tmp_path):
-    monkeypatch.setattr(store, "_store_path", lambda: tmp_path / "devices.json")
-    monkeypatch.setattr(outbox, "_outbox_path", lambda: tmp_path / "outbox.json")
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
     adapter = object.__new__(TalariaPlatformAdapter)
     inactive_id, _ = store.create_paired_device("old-install", "old phone")
     store.deactivate(inactive_id)

@@ -6,13 +6,13 @@ import json
 import os
 import re
 import sqlite3
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
+from hermes_constants import get_hermes_home, secure_parent_dir
+
 _BUSY_TIMEOUT_MS = 30_000
-_LOCK_RETRIES = 100
 _MIGRATION_KEY = "legacy_json_migration"
 
 
@@ -62,17 +62,11 @@ _SCHEMA_STATEMENTS = (
     CREATE INDEX IF NOT EXISTS outbox_pending_idx
     ON outbox_items(active, delivered_at, created_at, id)
     """,
+    """
+    CREATE INDEX IF NOT EXISTS devices_token_idx
+    ON devices(token_sha256)
+    """,
 )
-
-
-def _retry_locked(operation):
-    for attempt in range(_LOCK_RETRIES):
-        try:
-            return operation()
-        except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc).lower() or attempt == _LOCK_RETRIES - 1:
-                raise
-            time.sleep(min(0.005 * (attempt + 1), 0.05))
 
 
 def _legacy_rows(path: Path, collection_key: str) -> list[dict]:
@@ -289,26 +283,69 @@ def _migrate_legacy_json(connection: sqlite3.Connection, database_path: Path) ->
     )
 
 
-def connect(database_path: Path, *, migrate_legacy: bool = True) -> sqlite3.Connection:
-    """Open the plugin database and atomically initialize/migrate it."""
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(database_path.parent, 0o700)
-    except OSError:
-        pass
+def database_path() -> Path:
+    """The plugin's single durable-state location; tests monkeypatch THIS."""
+    return Path(get_hermes_home()) / "talaria" / "talaria.db"
+
+
+def _open(path: Path) -> sqlite3.Connection:
+    """Open with hygiene: parent secured, file 0600 from creation, every
+    PRAGMA inside the close-on-failure guard."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secure_parent_dir(path)
+    # Pre-create at 0600 so token hashes are never observable at a wider
+    # mode — sqlite itself would create the file at umask default.
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    os.close(fd)
     connection = sqlite3.connect(
-        database_path,
+        path,
         timeout=_BUSY_TIMEOUT_MS / 1000,
         isolation_level=None,
     )
-    connection.row_factory = sqlite3.Row
-    connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
-    connection.execute("PRAGMA foreign_keys = ON")
-    journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
-    if str(journal_mode).lower() != "wal":
-        _retry_locked(lambda: connection.execute("PRAGMA journal_mode = WAL").fetchone())
-    connection.execute("PRAGMA synchronous = FULL")
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+        connection.execute("PRAGMA foreign_keys = ON")
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(journal_mode).lower() != "wal":
+            connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = FULL")
+    except Exception:
+        connection.close()
+        raise
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{path}{suffix}")
+        try:
+            if sidecar.exists():
+                os.chmod(sidecar, 0o600)
+        except OSError:
+            pass
+    return connection
 
+
+def try_connect_readonly(path: Path | None = None) -> sqlite3.Connection | None:
+    """Open read-only WITHOUT creating or migrating; None when absent or
+    unreadable. The liveness-prose probe rides this (351-I)."""
+    resolved = path if path is not None else database_path()
+    if not resolved.exists():
+        return None
+    try:
+        connection = sqlite3.connect(
+            f"file:{resolved}?mode=ro",
+            uri=True,
+            timeout=_BUSY_TIMEOUT_MS / 1000,
+            isolation_level=None,
+        )
+    except sqlite3.Error:
+        return None
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def connect(path: Path | None = None) -> sqlite3.Connection:
+    """Open the plugin database, creating schema and migrating on first use."""
+    resolved = path if path is not None else database_path()
+    connection = _open(resolved)
     try:
         schema_exists = connection.execute(
             """
@@ -317,29 +354,19 @@ def connect(database_path: Path, *, migrate_legacy: bool = True) -> sqlite3.Conn
             """
         ).fetchone()[0] == 3
         migration_complete = False
-        if schema_exists and migrate_legacy:
+        if schema_exists:
             migration_complete = connection.execute(
                 "SELECT 1 FROM schema_metadata WHERE key = ?", (_MIGRATION_KEY,)
             ).fetchone() is not None
 
-        if not schema_exists or (migrate_legacy and not migration_complete):
-            _retry_locked(lambda: connection.execute("BEGIN IMMEDIATE"))
+        if not schema_exists or not migration_complete:
+            connection.execute("BEGIN IMMEDIATE")
             for statement in _SCHEMA_STATEMENTS:
                 connection.execute(statement)
-            if migrate_legacy:
-                _migrate_legacy_json(connection, database_path)
+            _migrate_legacy_json(connection, resolved)
             connection.commit()
     except Exception:
         connection.rollback()
         connection.close()
         raise
-
-    try:
-        os.chmod(database_path, 0o600)
-        for suffix in ("-wal", "-shm"):
-            sidecar = Path(f"{database_path}{suffix}")
-            if sidecar.exists():
-                os.chmod(sidecar, 0o600)
-    except OSError:
-        pass
     return connection

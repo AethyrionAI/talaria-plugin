@@ -2,7 +2,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from threading import Barrier
 
-from .. import outbox, store
+from .. import database, outbox, store
 from ..database import connect
 
 
@@ -25,8 +25,7 @@ def _process_pair(home: str, index: int) -> tuple[str, str]:
 
 
 def _redirect(monkeypatch, tmp_path):
-    monkeypatch.setattr(store, "_store_path", lambda: tmp_path / "devices.json")
-    monkeypatch.setattr(outbox, "_outbox_path", lambda: tmp_path / "outbox.json")
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
 
 
 def test_cross_process_appends_preserve_every_item(monkeypatch, tmp_path):
@@ -110,7 +109,7 @@ def test_concurrent_legacy_any_drains_claim_item_for_exactly_one_device(monkeypa
         "id": "legacy-pending",
         "text": "legacy pending",
     }
-    connection = connect(outbox._database_path())
+    connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(

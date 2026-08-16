@@ -5,24 +5,12 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-
-from hermes_constants import get_hermes_home
 
 from .database import connect
 
 
 class UnknownTargetError(ValueError):
     """Raised when a message target is absent or inactive."""
-
-
-def _outbox_path() -> Path:
-    """Legacy JSON path retained for first-use migration compatibility."""
-    return Path(get_hermes_home()) / "talaria" / "outbox.json"
-
-
-def _database_path() -> Path:
-    return _outbox_path().with_name("talaria.db")
 
 
 def _now_iso() -> str:
@@ -92,7 +80,7 @@ def append(
     exists. New writes never use the migration-only ``legacy_any`` scope.
     """
     item = _new_item(text, meta)
-    connection = connect(_database_path())
+    connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")
         if target_device_id is None:
@@ -128,7 +116,7 @@ def append_for_devices(text: str, device_ids: list[str], meta: dict | None = Non
     if not unique_ids:
         return []
     items = [_new_item(text, meta) for _ in unique_ids]
-    connection = connect(_database_path())
+    connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")
         for item, device_id in zip(items, unique_ids):
@@ -144,7 +132,7 @@ def append_for_devices(text: str, device_ids: list[str], meta: dict | None = Non
 
 def all_pending_for_diagnostics() -> list[dict]:
     """Inspect all pending rows without claiming them; never use for delivery."""
-    connection = connect(_database_path())
+    connection = connect()
     try:
         rows = connection.execute(
             """
@@ -160,7 +148,7 @@ def all_pending_for_diagnostics() -> list[dict]:
 
 def pending(device_id: str) -> list[dict]:
     """Return pending items entitled to one authenticated active device."""
-    connection = connect(_database_path())
+    connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")
         if connection.execute(
@@ -205,7 +193,7 @@ def mark_delivered(item_ids: list[str], *, device_id: str) -> list[str]:
     wanted = list(dict.fromkeys(item_ids or []))
     if not wanted or not device_id:
         return []
-    connection = connect(_database_path())
+    connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")
         if connection.execute(

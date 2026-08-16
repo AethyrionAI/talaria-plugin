@@ -11,20 +11,8 @@ import hashlib
 import secrets
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-
-from hermes_constants import get_hermes_home
 
 from .database import connect
-
-
-def _store_path() -> Path:
-    """Legacy JSON path retained for first-use migration compatibility."""
-    return Path(get_hermes_home()) / "talaria" / "devices.json"
-
-
-def _database_path() -> Path:
-    return _store_path().with_name("talaria.db")
 
 
 def _now_iso() -> str:
@@ -55,7 +43,7 @@ def _new_credentials() -> tuple[str, str, str]:
 def create_pairing() -> tuple[str, str]:
     """Create a manual pairing record and return its one-time plaintext token."""
     device_id, token, token_sha256 = _new_credentials()
-    connection = connect(_database_path())
+    connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
@@ -76,7 +64,7 @@ def create_pairing() -> tuple[str, str]:
 
 
 def devices() -> list[dict]:
-    connection = connect(_database_path())
+    connection = connect()
     try:
         rows = connection.execute(
             "SELECT * FROM devices ORDER BY created, id"
@@ -87,7 +75,7 @@ def devices() -> list[dict]:
 
 
 def active_devices() -> list[dict]:
-    connection = connect(_database_path())
+    connection = connect()
     try:
         rows = connection.execute(
             "SELECT * FROM devices WHERE active = 1 ORDER BY created, id"
@@ -98,7 +86,7 @@ def active_devices() -> list[dict]:
 
 
 def active_device(device_id: str) -> dict | None:
-    connection = connect(_database_path())
+    connection = connect()
     try:
         row = connection.execute(
             "SELECT * FROM devices WHERE id = ? AND active = 1",
@@ -111,7 +99,7 @@ def active_device(device_id: str) -> dict | None:
 
 def deactivate(device_id: str | None = None) -> int:
     """Deactivate one device, or every active device when no id is supplied."""
-    connection = connect(_database_path())
+    connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")
         if device_id is None:
@@ -140,7 +128,7 @@ def create_paired_device(install_id: str, name: str) -> tuple[str, str]:
     """Atomically rotate any active row for an install and pair a new device."""
     device_id, token, token_sha256 = _new_credentials()
     timestamp = _now_iso()
-    connection = connect(_database_path())
+    connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
@@ -169,7 +157,7 @@ def create_paired_device(install_id: str, name: str) -> tuple[str, str]:
 
 def device_for_token(token: str) -> dict | None:
     digest = hashlib.sha256((token or "").encode("utf-8")).hexdigest()
-    connection = connect(_database_path())
+    connection = connect()
     try:
         row = connection.execute(
             "SELECT * FROM devices WHERE token_sha256 = ? AND active = 1",
@@ -181,7 +169,7 @@ def device_for_token(token: str) -> dict | None:
 
 
 def touch_device(device_id: str) -> None:
-    connection = connect(_database_path())
+    connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(

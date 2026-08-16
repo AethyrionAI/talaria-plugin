@@ -1,4 +1,4 @@
-from .. import outbox, store
+from .. import database, outbox, store
 from ..envelope import EnvelopeService
 from ..platform_adapter import TalariaPlatformAdapter
 from ..transport import TransportHub
@@ -7,8 +7,7 @@ API_KEY = "smoke-api-key-64chars-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 
 async def test_temporary_home_pair_target_drain_ack_redrain_unpair(monkeypatch, tmp_path):
-    monkeypatch.setattr(store, "_store_path", lambda: tmp_path / "devices.json")
-    monkeypatch.setattr(outbox, "_outbox_path", lambda: tmp_path / "outbox.json")
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
     service = EnvelopeService(
         api_key_provider=lambda: API_KEY,
         hub=TransportHub(),

@@ -3,12 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from .. import admin, outbox, store
+from .. import admin, database, outbox, store
 
 
 def _redirect(monkeypatch, tmp_path):
-    monkeypatch.setattr(store, "_store_path", lambda: tmp_path / "devices.json")
-    monkeypatch.setattr(outbox, "_outbox_path", lambda: tmp_path / "outbox.json")
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
 
 
 def _args(text, *, device=None, send_all=False):

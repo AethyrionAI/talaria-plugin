@@ -2,12 +2,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from .. import outbox, store
+from .. import database, outbox, store
 
 
 def _redirect(monkeypatch, tmp_path):
-    monkeypatch.setattr(outbox, "_outbox_path", lambda: tmp_path / "outbox.json")
-    monkeypatch.setattr(store, "_store_path", lambda: tmp_path / "devices.json")
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
 
 
 def test_append_then_pending(monkeypatch, tmp_path):

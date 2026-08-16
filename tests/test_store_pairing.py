@@ -2,11 +2,11 @@ import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import store
+from .. import database, store
 
 
 def _redirect(monkeypatch, tmp_path):
-    monkeypatch.setattr(store, "_store_path", lambda: tmp_path / "devices.json")
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
 
 
 def test_create_paired_device_persists_hash_not_token(monkeypatch, tmp_path):

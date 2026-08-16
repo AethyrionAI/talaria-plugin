@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from .. import outbox, store
+from .. import database, outbox, store
 from ..envelope import EnvelopeService
 from ..transport import TransportHub
 
@@ -11,8 +11,7 @@ API_KEY = "test-api-key-64chars-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 @pytest.fixture
 def env(monkeypatch, tmp_path):
-    monkeypatch.setattr(store, "_store_path", lambda: tmp_path / "devices.json")
-    monkeypatch.setattr(outbox, "_outbox_path", lambda: tmp_path / "outbox.json")
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
     hub = TransportHub()
     service = EnvelopeService(
         api_key_provider=lambda: API_KEY,

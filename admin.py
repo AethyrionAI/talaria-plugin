@@ -7,6 +7,7 @@ only hashes persist (see store.py).
 from __future__ import annotations
 
 from . import store
+from .database import database_path
 
 
 def setup_cli(subparser) -> None:
@@ -96,7 +97,7 @@ def handle_cli(args) -> int:
         records = store.devices()
         active = [d for d in records if d.get("active")]
         print("Talaria plugin — tools + admin + webhook platform adapter")
-        print(f"Store: {store._database_path()}")
+        print(f"Store: {database_path()}")
         if not records:
             print("No paired devices. Run `hermes talaria pair` to create one.")
             _print_transport_counters()
