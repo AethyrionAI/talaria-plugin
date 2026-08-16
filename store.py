@@ -40,6 +40,17 @@ def _new_credentials() -> tuple[str, str, str]:
     return uuid.uuid4().hex[:12], token, hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+# 351-D: a claim held by a device that is no longer active would strand the
+# row forever (nothing else may drain or ack it) — release it whenever the
+# device population changes.
+_RELEASE_STALE_CLAIMS = """
+    UPDATE outbox_items SET claimed_by_device_id = NULL
+    WHERE delivery_scope = 'legacy_any' AND active = 1
+      AND delivered_at IS NULL
+      AND claimed_by_device_id IN (SELECT id FROM devices WHERE active = 0)
+"""
+
+
 def create_pairing() -> tuple[str, str]:
     """Create a manual pairing record and return its one-time plaintext token."""
     device_id, token, token_sha256 = _new_credentials()
@@ -115,6 +126,7 @@ def deactivate(device_id: str | None = None) -> int:
                 """,
                 (_now_iso(), device_id),
             )
+        connection.execute(_RELEASE_STALE_CLAIMS)
         connection.commit()
         return cursor.rowcount
     except Exception:
@@ -146,6 +158,21 @@ def create_paired_device(install_id: str, name: str) -> tuple[str, str]:
             """,
             (device_id, token_sha256, install_id, name or None, timestamp),
         )
+        # 351-D: undelivered rows targeted at this install's rotated-away
+        # device ids follow the install to its new identity...
+        connection.execute(
+            """
+            UPDATE outbox_items SET target_device_id = ?
+            WHERE delivery_scope = 'target_device' AND active = 1
+              AND delivered_at IS NULL
+              AND target_device_id IN (
+                  SELECT id FROM devices WHERE install_id = ? AND active = 0
+              )
+            """,
+            (device_id, install_id),
+        )
+        # ...and claims held by any inactive device are released.
+        connection.execute(_RELEASE_STALE_CLAIMS)
         connection.commit()
         return device_id, token
     except Exception:

@@ -60,3 +60,38 @@ def test_concurrent_pairings_preserve_every_device(monkeypatch, tmp_path):
 
     assert len({device_id for device_id, _ in pairs}) == len(installs)
     assert {device["install_id"] for device in store.active_devices()} == set(installs)
+
+
+def test_repair_rehomes_pending_targeted_rows(monkeypatch, tmp_path):
+    """351-D RED->GREEN: re-pairing must not orphan queued messages."""
+    _redirect(monkeypatch, tmp_path)
+    from .. import outbox
+    old_id, _ = store.create_paired_device("install-1", "phone")
+    item = outbox.append("queued while offline", target_device_id=old_id)
+    new_id, _ = store.create_paired_device("install-1", "phone")
+
+    assert [row["id"] for row in outbox.pending(new_id)] == [item["id"]]
+    assert outbox.mark_delivered([item["id"]], device_id=new_id) == [item["id"]]
+
+
+def test_repair_releases_legacy_claims_of_inactive_devices(monkeypatch, tmp_path):
+    """351-D RED->GREEN: a claim held by a rotated-away device is released."""
+    _redirect(monkeypatch, tmp_path)
+    from .. import database, outbox
+    old_id, _ = store.create_paired_device("install-1", "phone")
+    connection = database.connect()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "INSERT INTO outbox_items (id, kind, text, created_at, target_device_id,"
+            " delivery_scope, claimed_by_device_id, delivered_at, active, meta_json)"
+            " VALUES ('leg-1', 'message', 'legacy', '2026-08-01T00:00:00+00:00',"
+            " NULL, 'legacy_any', NULL, NULL, 1, '{}')"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    assert [row["id"] for row in outbox.pending(old_id)] == ["leg-1"]   # claimed, never acked
+    new_id, _ = store.create_paired_device("install-1", "phone")
+
+    assert [row["id"] for row in outbox.pending(new_id)] == ["leg-1"]   # released, re-claimable
