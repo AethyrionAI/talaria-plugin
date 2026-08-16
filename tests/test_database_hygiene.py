@@ -11,7 +11,6 @@ import sqlite3
 import stat
 
 import pytest
-
 from talaria import database
 
 

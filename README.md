@@ -52,8 +52,11 @@ Delivery selection is deliberately fail-closed:
   independent acknowledgement lifecycle.
 - Unknown or inactive targets fail without queuing an item.
 
-The platform adapter follows the same contract: its `chat_id` must be the ID of
-one active paired device. Missing targets are never treated as broadcast.
+The platform adapter follows the same contract: its `chat_id` must name one
+active paired device — either the device ID, or the device's `install_id`
+(the rotation-proof address: device IDs change on every re-pair, install IDs
+do not, so persisted chat_ids should prefer the install ID). Missing targets
+are never treated as broadcast.
 
 ## Durable state and migration
 
@@ -68,21 +71,40 @@ timeout, and write transactions. Pairing tokens remain SHA-256 hashes at rest;
 plaintext tokens are returned only for one-time pairing. Devices and delivered
 items are retained rather than deleted.
 
-On first use, if legacy `devices.json` and/or `outbox.json` files exist beside
-the database, the plugin imports both documents in one transaction and validates
-the migrated rows before recording completion. The original JSON files remain
-untouched as recovery evidence. A malformed legacy document raises a migration
-error and is not renamed, truncated, or silently converted to empty state.
-Retrying after repair is idempotent.
+Initialization runs once per process, at plugin registration (and lazily as a
+fallback). If legacy `devices.json` and/or `outbox.json` files exist beside
+the database, both documents import in one transaction with per-row read-back
+validation, and a completion marker records that a migration happened. A fresh
+install with no legacy files writes no marker, so legacy JSON appearing later
+(an old gateway process still writing, or a restore from backup) imports at
+the next initialization.
 
-Legacy pending outbox rows did not carry an authoritative device target. They
-migrate as `legacy_any` compatibility rows. The first authenticated active
-device to drain atomically claims each such row; other devices cannot drain or
-acknowledge it. New adapter and CLI sends always create explicit targeted rows.
+Migration is fail-soft: a malformed legacy file is quarantined — renamed to
+`<file>.rejected` with its bytes preserved — with a logged warning, and the
+plugin keeps serving; the other file still imports. An unreadable
+`talaria.db` is itself quarantined to `talaria.db.corrupt-<stamp>` and
+rebuilt from the untouched JSON. Valid legacy files are never renamed or
+modified.
+
+**Migration recovery:** after repairing a quarantined file, rename it back
+(drop the `.rejected` suffix), delete the `legacy_json_migration` row from
+`schema_metadata` in `talaria.db`, and restart the gateway; re-import is
+idempotent (already-present rows are skipped and verified).
+
+Each legacy outbox row migrates to the device its `meta.chat_id` names when
+that device was imported active; otherwise to the only active device when
+exactly one exists. Only genuinely ambiguous rows migrate as `legacy_any`
+compatibility rows, which the first authenticated active device to drain
+atomically claims. Re-pairing re-targets a device's pending rows to its new
+identity and releases claims held by deactivated devices, so rotation never
+strands queued messages. New adapter and CLI sends always create explicit
+targeted rows.
 
 ## Authentication and delivery properties
 
-- Pairing requires the gateway API key.
+- Wire pairing (the app's `pair` event) requires the gateway API key;
+  `hermes talaria pair` is a local, credential-free fallback for an operator
+  already on the host, and such manual rows never auto-rotate.
 - Device operations require that device's active token and matching device ID.
 - Tokens are bound to their device ID and hashed at rest.
 - Deactivation never deletes the historical row.
