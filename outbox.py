@@ -46,13 +46,23 @@ def _new_item(text: str, meta: dict | None) -> dict:
     }
 
 
-def _insert_targeted(connection, item: dict, target_device_id: str) -> None:
-    active = connection.execute(
-        "SELECT 1 FROM devices WHERE id = ? AND active = 1",
-        (target_device_id,),
+def _insert_targeted(connection, item: dict, target: str) -> str:
+    """Insert one row for ``target`` — an active device id, or an install_id
+    (the rotation-proof address, 351-F: device ids change on every re-pair,
+    install ids don't). Exact id match wins; else the newest active device
+    carrying that install_id. Returns the resolved device id."""
+    row = connection.execute(
+        """
+        SELECT id FROM devices
+        WHERE active = 1 AND (id = ? OR install_id = ?)
+        ORDER BY (id = ?) DESC, created DESC, rowid DESC
+        LIMIT 1
+        """,
+        (target, target, target),
     ).fetchone()
-    if active is None:
-        raise UnknownTargetError(f"Talaria device '{target_device_id}' is unknown or inactive")
+    if row is None:
+        raise UnknownTargetError(f"Talaria device '{target}' is unknown or inactive")
+    resolved = row["id"]
     connection.execute(
         """
         INSERT INTO outbox_items (
@@ -62,10 +72,11 @@ def _insert_targeted(connection, item: dict, target_device_id: str) -> None:
         """,
         (
             item["id"], item["kind"], item["text"], item["created_at"],
-            target_device_id,
+            resolved,
             json.dumps(item["meta"], separators=(",", ":"), sort_keys=True),
         ),
     )
+    return resolved
 
 
 def append(
@@ -76,8 +87,10 @@ def append(
 ) -> dict:
     """Atomically append one item to an explicit or unambiguous active target.
 
-    Omitting ``target_device_id`` is safe only when exactly one active device
-    exists. New writes never use the migration-only ``legacy_any`` scope.
+    ``target_device_id`` may be an active device id or an install_id (the
+    rotation-proof address). Omitting it is safe only when exactly one
+    active device exists. New writes never use the migration-only
+    ``legacy_any`` scope.
     """
     item = _new_item(text, meta)
     connection = connect()

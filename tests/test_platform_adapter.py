@@ -50,3 +50,17 @@ async def test_send_unknown_or_inactive_target_fails_without_queueing(monkeypatc
         assert "unknown or inactive" in result.error
 
     assert outbox.all_pending_for_diagnostics() == []
+
+
+async def test_send_addressed_by_install_id_survives_repair(monkeypatch, tmp_path):
+    """351-F RED->GREEN: install_id is the rotation-proof address. A send
+    addressed by install_id lands on the CURRENT device after a re-pair."""
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
+    monkeypatch.setattr(platform_adapter.HUB, "wake", lambda device_id=None: None)
+    adapter = object.__new__(TalariaPlatformAdapter)
+    store.create_paired_device("stable-install", "phone")
+    new_id, _ = store.create_paired_device("stable-install", "phone")  # rotation
+
+    result = await adapter.send("stable-install", "hello after re-pair")
+    assert result.success is True
+    assert [row["id"] for row in outbox.pending(new_id)] == [result.message_id]
