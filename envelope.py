@@ -20,6 +20,7 @@ exception; see `_text()` and the isinstance checks below.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import time
@@ -93,11 +94,11 @@ class EnvelopeService:
         key = self._api_key() or ""
         return bool(key) and _ct_equal(value, key)
 
-    def _device_authorized(self, payload: dict) -> dict | None:
+    async def _device_authorized(self, payload: dict) -> dict | None:
         auth = payload.get("auth")
         if not isinstance(auth, str):
             return None
-        device = self._store.device_for_token(auth)
+        device = await asyncio.to_thread(self._store.device_for_token, auth)
         if device is None:
             return None
         device_id = device.get("id")
@@ -134,12 +135,13 @@ class EnvelopeService:
         install_id = _text(payload.get("install_id"))
         if not install_id:
             return {"error": "install_id is required", "code": "missing_install_id"}
-        device_id, token = self._store.create_paired_device(
-            install_id, _text(payload.get("device_name"))
+        device_id, token = await asyncio.to_thread(
+            self._store.create_paired_device,
+            install_id, _text(payload.get("device_name")),
         )
         return {"device_id": device_id, "device_token": token}
 
-    def _touch(self, device_id: str) -> None:
+    async def _touch(self, device_id: str) -> None:
         self._hub.touch(device_id)
         now = time.monotonic()
         # -inf, not 0.0: time.monotonic() is seconds-since-an-arbitrary-
@@ -150,33 +152,36 @@ class EnvelopeService:
         last = self._last_store_touch.get(device_id, float("-inf"))
         if now - last >= self._touch_throttle:
             self._last_store_touch[device_id] = now
-            self._store.touch_device(device_id)
+            await asyncio.to_thread(self._store.touch_device, device_id)
 
     async def _drain(self, payload: dict) -> dict:
-        device = self._device_authorized(payload)
+        device = await self._device_authorized(payload)
         if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
         device_id = device["id"]
-        self._touch(device_id)
-        items = self._outbox.pending(device_id)
+        await self._touch(device_id)
+        items = await asyncio.to_thread(self._outbox.pending, device_id)
         queries = self._hub.take_queries(device_id)
         if not items and not queries and payload.get("wait"):
             await self._hub.park(device_id, timeout=self._hold)
-            self._touch(device_id)
-            items = self._outbox.pending(device_id)
+            await self._touch(device_id)
+            items = await asyncio.to_thread(self._outbox.pending, device_id)
             queries = self._hub.take_queries(device_id)
         return {"items": items, "queries": queries}
 
     async def _ack(self, payload: dict) -> dict:
-        device = self._device_authorized(payload)
+        device = await self._device_authorized(payload)
         if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
         raw_ids = payload.get("item_ids")
         item_ids = [i for i in raw_ids if isinstance(i, str)] if isinstance(raw_ids, list) else []
-        return {"acked": self._outbox.mark_delivered(item_ids, device_id=device["id"])}
+        acked = await asyncio.to_thread(
+            self._outbox.mark_delivered, item_ids, device_id=device["id"]
+        )
+        return {"acked": acked}
 
     async def _query_result(self, payload: dict) -> dict:
-        device = self._device_authorized(payload)
+        device = await self._device_authorized(payload)
         if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
         query_id = payload.get("query_id")
@@ -198,8 +203,8 @@ class EnvelopeService:
         return {"ok": bool(resolved)}
 
     async def _unpair(self, payload: dict) -> dict:
-        device = self._device_authorized(payload)
+        device = await self._device_authorized(payload)
         if device is None:
             return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
-        self._store.deactivate(device["id"])
+        await asyncio.to_thread(self._store.deactivate, device["id"])
         return {"ok": True}

@@ -160,25 +160,43 @@ def all_pending_for_diagnostics() -> list[dict]:
 
 
 def pending(device_id: str) -> list[dict]:
-    """Return pending items entitled to one authenticated active device."""
+    """Return pending items entitled to one authenticated active device.
+
+    351-E: this is the hottest path (every drain poll, twice when parked),
+    so it stays a pure WAL read — which never waits on the write lock —
+    unless an unclaimed legacy row actually needs claiming, which only a
+    migration-era install ever has."""
     connection = connect()
     try:
-        connection.execute("BEGIN IMMEDIATE")
         if connection.execute(
             "SELECT 1 FROM devices WHERE id = ? AND active = 1", (device_id,)
         ).fetchone() is None:
-            connection.commit()
             return []
-        connection.execute(
+        claimable = connection.execute(
             """
-            UPDATE outbox_items
-            SET claimed_by_device_id = ?
+            SELECT 1 FROM outbox_items
             WHERE active = 1 AND delivered_at IS NULL
-              AND delivery_scope = 'legacy_any'
-              AND claimed_by_device_id IS NULL
-            """,
-            (device_id,),
-        )
+              AND delivery_scope = 'legacy_any' AND claimed_by_device_id IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        if claimable is not None:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    UPDATE outbox_items
+                    SET claimed_by_device_id = ?
+                    WHERE active = 1 AND delivered_at IS NULL
+                      AND delivery_scope = 'legacy_any'
+                      AND claimed_by_device_id IS NULL
+                    """,
+                    (device_id,),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
         rows = connection.execute(
             """
             SELECT * FROM outbox_items
@@ -192,11 +210,7 @@ def pending(device_id: str) -> list[dict]:
             """,
             (device_id, device_id),
         ).fetchall()
-        connection.commit()
         return [_item_from_row(row) for row in rows]
-    except Exception:
-        connection.rollback()
-        raise
     finally:
         connection.close()
 

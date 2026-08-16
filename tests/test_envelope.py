@@ -328,3 +328,55 @@ async def test_dispatch_returns_clean_error_when_storage_raises(env, monkeypatch
         "device_id": paired["device_id"], "wait": False,
     })
     assert result["code"] == "storage_error"
+
+
+async def test_drain_does_not_stall_the_event_loop_under_a_held_write_lock(env, monkeypatch, tmp_path):
+    """351-E RED->GREEN pin of the measured 3.05s loop freeze: with a writer
+    squatting on the database, a drain must neither raise nor stop the
+    loop's heart. (The holder owns its connection entirely inside its own
+    thread — sqlite3 connections are not cross-thread.)"""
+    import threading
+
+    service, _ = env
+    paired = await service.dispatch({"type": "pair", "auth": API_KEY, "install_id": "i-1", "device_name": "p"})
+
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        holder = database.connect()
+        try:
+            holder.execute("BEGIN IMMEDIATE")
+            locked.set()
+            release.wait(2.0)
+            holder.rollback()
+        finally:
+            holder.close()
+
+    thread = threading.Thread(target=hold, daemon=True)
+    thread.start()
+    assert locked.wait(5.0)
+    try:
+        gaps = []
+
+        async def heartbeat():
+            loop = asyncio.get_running_loop()
+            last = loop.time()
+            for _ in range(30):
+                await asyncio.sleep(0.01)
+                now = loop.time()
+                gaps.append(now - last)
+                last = now
+
+        beat = asyncio.ensure_future(heartbeat())
+        result = await service.dispatch({
+            "type": "drain", "auth": paired["device_token"],
+            "device_id": paired["device_id"], "wait": False,
+        })
+        await beat
+    finally:
+        release.set()
+        thread.join(timeout=6.0)
+
+    assert result == {"items": [], "queries": []}
+    assert max(gaps) < 0.25, f"event loop stalled {max(gaps):.3f}s"

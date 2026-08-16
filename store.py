@@ -198,14 +198,12 @@ def device_for_token(token: str) -> dict | None:
 def touch_device(device_id: str) -> None:
     connection = connect()
     try:
-        connection.execute("BEGIN IMMEDIATE")
+        # Single statement, autocommit (isolation_level=None): an explicit
+        # BEGIN IMMEDIATE here only held the write lock longer for an
+        # advisory column (351-E).
         connection.execute(
             "UPDATE devices SET last_seen = ? WHERE id = ? AND active = 1",
             (_now_iso(), device_id),
         )
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
     finally:
         connection.close()

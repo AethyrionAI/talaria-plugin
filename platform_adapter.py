@@ -9,6 +9,7 @@ pseudo-member exactly as plugins/platforms/google_chat does.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
@@ -57,7 +58,8 @@ class TalariaPlatformAdapter(BasePlatformAdapter):
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
         try:
-            item = outbox.append(
+            item = await asyncio.to_thread(
+                outbox.append,
                 content,
                 meta={"chat_id": chat_id},
                 target_device_id=chat_id,
