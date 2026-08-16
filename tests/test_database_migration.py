@@ -80,7 +80,9 @@ def test_first_use_migrates_devices_and_outbox_in_one_transaction(monkeypatch, t
         ).fetchone()
     finally:
         connection.close()
-    assert delivered == ("2026-08-03T02:02:03+00:00", "legacy_any")
+    # 351-B: with exactly one active migrated device, legacy rows resolve
+    # to a real target instead of the claimable legacy_any scope.
+    assert delivered == ("2026-08-03T02:02:03+00:00", "target_device")
     assert marker == ("1",)
     assert (tmp_path / "devices.json").exists()
     assert (tmp_path / "outbox.json").exists()
@@ -203,3 +205,45 @@ def test_corrupt_database_is_quarantined_and_rebuilt_from_json(monkeypatch, tmp_
         device["id"] for device in legacy_devices["devices"]
     }
     assert list(tmp_path.glob("talaria.db.corrupt-*"))
+
+
+def test_migrated_row_with_chat_id_targets_that_device_only(monkeypatch, tmp_path):
+    """351-B RED->GREEN: the reproduced cross-device disclosure. The baseline
+    adapter wrote meta.chat_id on every row it created; migration must honor
+    it, so devB can neither drain nor ack devA's row."""
+    _redirect(monkeypatch, tmp_path)
+    devices = {"devices": [
+        {"id": "dev-a", "token_sha256": "a" * 64, "install_id": "ia",
+         "name": "phone", "created": "2026-08-01T01:02:03+00:00",
+         "active": True, "last_seen": None},
+        {"id": "dev-b", "token_sha256": "b" * 64, "install_id": "ib",
+         "name": "ipad", "created": "2026-08-01T01:02:03+00:00",
+         "active": True, "last_seen": None},
+    ]}
+    items = {"items": [{
+        "id": "secret-for-a", "kind": "message", "text": "private answer",
+        "created_at": "2026-08-04T01:02:03+00:00",
+        "meta": {"chat_id": "dev-a"}, "delivered_at": None, "active": True,
+    }]}
+    (tmp_path / "devices.json").write_text(json.dumps(devices), encoding="utf-8")
+    (tmp_path / "outbox.json").write_text(json.dumps(items), encoding="utf-8")
+
+    assert outbox.pending("dev-b") == []
+    assert [item["id"] for item in outbox.pending("dev-a")] == ["secret-for-a"]
+    assert outbox.mark_delivered(["secret-for-a"], device_id="dev-b") == []
+    assert outbox.mark_delivered(["secret-for-a"], device_id="dev-a") == ["secret-for-a"]
+
+
+def test_migrated_row_without_chat_id_targets_the_single_active_device(monkeypatch, tmp_path):
+    _redirect(monkeypatch, tmp_path)
+    _write_legacy(tmp_path)   # one active device (phone-1), one inactive
+    assert len(store.devices()) == 2   # force the migration
+
+    connection = sqlite3.connect(tmp_path / "talaria.db")
+    try:
+        row = connection.execute(
+            "SELECT target_device_id, delivery_scope FROM outbox_items WHERE id = 'pending-1'"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == ("phone-1", "target_device")

@@ -237,17 +237,36 @@ def _migrate_outbox(connection: sqlite3.Connection, path: Path, rows: list[dict]
                 path, "item", record_id, "meta", "keys and values must be strings"
             )
         meta_json = json.dumps(meta, separators=(",", ":"), sort_keys=True)
-        values = (
-            record_id, kind, text, created_at, delivered_at, int(active), meta_json,
-        )
+        # 351-B: the baseline adapter wrote meta.chat_id — the target device
+        # id — on every row it created, so "legacy rows have no authoritative
+        # target" was false. Honor it; fall back to the only active device;
+        # only a genuinely ambiguous row stays claimable legacy_any.
+        target_id = None
+        chat_id = meta.get("chat_id")
+        if isinstance(chat_id, str) and chat_id:
+            row = connection.execute(
+                "SELECT id FROM devices WHERE id = ? AND active = 1", (chat_id,)
+            ).fetchone()
+            if row is not None:
+                target_id = chat_id
+        if target_id is None:
+            actives = connection.execute(
+                "SELECT id FROM devices WHERE active = 1 LIMIT 2"
+            ).fetchall()
+            if len(actives) == 1:
+                target_id = actives[0]["id"]
+        scope = "target_device" if target_id is not None else "legacy_any"
         connection.execute(
             """
             INSERT OR IGNORE INTO outbox_items (
                 id, kind, text, created_at, target_device_id, delivery_scope,
                 claimed_by_device_id, delivered_at, active, meta_json
-            ) VALUES (?, ?, ?, ?, NULL, 'legacy_any', NULL, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
             """,
-            values,
+            (
+                record_id, kind, text, created_at, target_id, scope,
+                delivered_at, int(active), meta_json,
+            ),
         )
         stored = connection.execute(
             """
@@ -257,7 +276,10 @@ def _migrate_outbox(connection: sqlite3.Connection, path: Path, rows: list[dict]
             """,
             (legacy["id"],),
         ).fetchone()
-        expected = (*values, None, "legacy_any", None)
+        expected = (
+            record_id, kind, text, created_at, delivered_at, int(active),
+            meta_json, target_id, scope, None,
+        )
         if stored is None or tuple(stored) != expected:
             raise MigrationError(f"Cannot migrate {path}: item {legacy['id']} conflicts with existing state")
 
