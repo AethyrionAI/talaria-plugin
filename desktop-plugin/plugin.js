@@ -1,5 +1,5 @@
 /**
- * Talaria desktop face v0 (#270): the pane that answers "is it actually
+ * Talaria desktop face v0 (tracker 270): the pane that answers "is it actually
  * installed?" — read-only, three machine-derived states (bar 270-C):
  *
  *   NOT INSTALLED        ← ctx.rest('/status') failed with the backend's 404
@@ -9,7 +9,7 @@
  *
  * Devices are the LIVE state's CONTENT, never its verdict (270-C adaptation
  * #2). A non-404 transport failure renders an honest unknown — it licenses
- * no state. Vocabulary is shared with the iOS app's #269-A family.
+ * no state. Vocabulary is shared with the iOS app's 269-A family.
  *
  * Install: copy this file to ~/.hermes/desktop-plugins/talaria/plugin.js
  * (folder name == plugin id). Plain ESM, loaded uncompiled — jsx() calls
@@ -131,7 +131,7 @@ function TalariaPane(ctx) {
 }
 
 export default {
-  id: ID, // must match the folder name AND plugin.yaml's name (#263(a) discipline)
+  id: ID, // must match the folder name AND plugin.yaml's name (tracker 263(a) discipline)
   name: 'Talaria',
   description: 'Is the Talaria phone bridge actually installed? Read-only status.',
   register(ctx) {
