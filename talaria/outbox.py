@@ -34,10 +34,10 @@ def _safe_meta(meta: dict | None) -> dict[str, str]:
     return {str(key): str(value) for key, value in (meta or {}).items()}
 
 
-def _new_item(text: str, meta: dict | None) -> dict:
+def _new_item(text: str, meta: dict | None, kind: str = "message") -> dict:
     return {
         "id": uuid.uuid4().hex[:12],
-        "kind": "message",
+        "kind": kind,
         "text": text,
         "created_at": _now_iso(),
         "meta": _safe_meta(meta),
@@ -84,15 +84,18 @@ def append(
     meta: dict | None = None,
     *,
     target_device_id: str | None = None,
+    kind: str = "message",
 ) -> dict:
     """Atomically append one item to an explicit or unambiguous active target.
 
     ``target_device_id`` may be an active device id or an install_id (the
     rotation-proof address). Omitting it is safe only when exactly one
     active device exists. New writes never use the migration-only
-    ``legacy_any`` scope.
+    ``legacy_any`` scope. ``kind`` routes the item app-side ("message" =
+    inbox; "artifact" = the 3D mirror correlator) — the schema does not
+    constrain it, so producers own the vocabulary.
     """
-    item = _new_item(text, meta)
+    item = _new_item(text, meta, kind)
     connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")
@@ -123,12 +126,18 @@ def append(
         connection.close()
 
 
-def append_for_devices(text: str, device_ids: list[str], meta: dict | None = None) -> list[dict]:
+def append_for_devices(
+    text: str,
+    device_ids: list[str],
+    meta: dict | None = None,
+    *,
+    kind: str = "message",
+) -> list[dict]:
     """Atomically fan out one independently acknowledged row per device."""
     unique_ids = list(dict.fromkeys(device_ids))
     if not unique_ids:
         return []
-    items = [_new_item(text, meta) for _ in unique_ids]
+    items = [_new_item(text, meta, kind) for _ in unique_ids]
     connection = connect()
     try:
         connection.execute("BEGIN IMMEDIATE")

@@ -116,8 +116,71 @@ def test_probe_against_refused_port_is_unreachable(plugin_api):
     assert result["status"] is None
 
 
+def _counting_probe(plugin_api, monkeypatch, result_by_url):
+    calls = []
+
+    def fake_probe_once(target):
+        calls.append(target)
+        return dict(result_by_url[target])
+
+    monkeypatch.setattr(plugin_api, "_probe_once", fake_probe_once)
+    monkeypatch.setattr(plugin_api, "_probe_cache", {}, raising=False)
+    return calls
+
+
+def test_probe_cache_serves_verdicts_for_sixty_seconds(plugin_api, monkeypatch):
+    # #362 3D-F: the pane polls /status every 5 s; without this floor the
+    # probe writes ~17k 401 access-log lines/day into agent.log.
+    url = "http://127.0.0.1:9/x"
+    calls = _counting_probe(
+        plugin_api, monkeypatch, {url: {"observation": "live", "status": 401, "url": url}}
+    )
+    clock = iter([0.0, 5.0, 59.9, 60.1]).__next__
+    first = plugin_api.probe_gateway_adapter(url, now=clock)
+    second = plugin_api.probe_gateway_adapter(url, now=clock)
+    third = plugin_api.probe_gateway_adapter(url, now=clock)
+    assert first == second == third
+    assert len(calls) == 1  # 5.0 and 59.9 both served from cache
+    plugin_api.probe_gateway_adapter(url, now=clock)
+    assert len(calls) == 2  # 60.1 re-probed
+
+
+def test_probe_cache_retries_failures_after_ten_seconds(plugin_api, monkeypatch):
+    # A dead-gateway verdict must not stick for a full minute after the
+    # gateway comes back — failures get the short floor.
+    url = "http://127.0.0.1:9/x"
+    results = {url: {"observation": "unreachable", "status": None, "url": url}}
+    calls = _counting_probe(plugin_api, monkeypatch, results)
+    clock = iter([0.0, 9.9, 10.1]).__next__
+    plugin_api.probe_gateway_adapter(url, now=clock)
+    plugin_api.probe_gateway_adapter(url, now=clock)
+    assert len(calls) == 1  # 9.9 cached
+    results[url] = {"observation": "live", "status": 401, "url": url}
+    recovered = plugin_api.probe_gateway_adapter(url, now=clock)
+    assert len(calls) == 2  # 10.1 re-probed
+    assert recovered["observation"] == "live"
+
+
+def test_probe_cache_is_keyed_per_url(plugin_api, monkeypatch):
+    url_a = "http://127.0.0.1:9/a"
+    url_b = "http://127.0.0.1:9/b"
+    calls = _counting_probe(
+        plugin_api,
+        monkeypatch,
+        {
+            url_a: {"observation": "live", "status": 401, "url": url_a},
+            url_b: {"observation": "absent", "status": 503, "url": url_b},
+        },
+    )
+    clock = iter([0.0, 1.0]).__next__
+    a = plugin_api.probe_gateway_adapter(url_a, now=clock)
+    b = plugin_api.probe_gateway_adapter(url_b, now=clock)
+    assert (a["observation"], b["observation"]) == ("live", "absent")
+    assert calls == [url_a, url_b]  # b was not served a's cache
+
+
 def test_plugin_version_reads_the_yaml(plugin_api):
-    assert plugin_api._plugin_version() == "0.2.0"
+    assert plugin_api._plugin_version() == "0.3.0"
 
 
 def test_manifest_name_discipline():

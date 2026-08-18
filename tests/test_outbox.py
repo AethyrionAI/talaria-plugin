@@ -98,6 +98,43 @@ def test_targeted_item_is_visible_only_to_its_device(monkeypatch, tmp_path):
     assert outbox.pending(ipad_id) == []
 
 
+def test_append_kind_artifact_rides_row_and_wire(monkeypatch, tmp_path):
+    # 3D (#362): artifact-kind items must survive append → pending intact,
+    # because the app routes on `kind` — a row silently coerced back to
+    # "message" would land file contents in the phone's inbox as junk.
+    _redirect(monkeypatch, tmp_path)
+    device_id, _ = store.create_paired_device("phone-install", "phone")
+    item = outbox.append(
+        "file-bytes",
+        meta={"path": "a.txt"},
+        target_device_id=device_id,
+        kind="artifact",
+    )
+    assert item["kind"] == "artifact"
+    [row] = outbox.pending(device_id)
+    assert row["kind"] == "artifact"
+    assert row["text"] == "file-bytes"
+
+
+def test_append_kind_defaults_to_message(monkeypatch, tmp_path):
+    _redirect(monkeypatch, tmp_path)
+    device_id, _ = store.create_paired_device("phone-install", "phone")
+    item = outbox.append("hi", target_device_id=device_id)
+    assert item["kind"] == "message"
+    [row] = outbox.pending(device_id)
+    assert row["kind"] == "message"
+
+
+def test_append_for_devices_carries_kind(monkeypatch, tmp_path):
+    _redirect(monkeypatch, tmp_path)
+    phone_id, _ = store.create_paired_device("phone-install", "phone")
+    ipad_id, _ = store.create_paired_device("ipad-install", "ipad")
+    items = outbox.append_for_devices("blob", [phone_id, ipad_id], kind="artifact")
+    assert [item["kind"] for item in items] == ["artifact", "artifact"]
+    assert [row["kind"] for row in outbox.pending(phone_id)] == ["artifact"]
+    assert [row["kind"] for row in outbox.pending(ipad_id)] == ["artifact"]
+
+
 def test_non_target_device_cannot_acknowledge_item(monkeypatch, tmp_path):
     _redirect(monkeypatch, tmp_path)
     phone_id, _ = store.create_paired_device("phone-install", "phone")
