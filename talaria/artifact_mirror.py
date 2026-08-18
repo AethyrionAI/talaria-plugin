@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from . import outbox, store
+from . import hygiene, outbox, store
 from .transport import HUB
 
 logger = logging.getLogger("talaria")
@@ -95,6 +95,9 @@ def _on_pre_tool_call(
             kind="artifact",
         )
         HUB.wake(device["id"])
+        # #363: the growth source pays for its own hygiene — throttled to
+        # one sweep per 6 h, and maybe_sweep itself never raises.
+        hygiene.maybe_sweep()
     except Exception:
         logger.debug("artifact mirror skipped a write", exc_info=True)
     return None
