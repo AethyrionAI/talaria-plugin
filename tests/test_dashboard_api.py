@@ -117,7 +117,7 @@ def test_probe_against_refused_port_is_unreachable(plugin_api):
 
 
 def test_plugin_version_reads_the_yaml(plugin_api):
-    assert plugin_api._plugin_version() == "0.2.0"
+    assert plugin_api._plugin_version() == "0.3.0"
 
 
 def test_manifest_name_discipline():

@@ -23,6 +23,11 @@ def register(ctx) -> None:
     tools.register_tools(ctx)
     admin.register_cli(ctx)
     try:
+        from . import artifact_mirror
+        artifact_mirror.register_hooks(ctx)
+    except Exception as exc:  # register must never break gateway load
+        print(f"[talaria] artifact mirror registration skipped: {exc}")
+    try:
         from .platform_adapter import TalariaPlatformAdapter
         ctx.register_platform(
             name="talaria",
