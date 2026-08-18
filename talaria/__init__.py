@@ -28,6 +28,15 @@ def register(ctx) -> None:
     except Exception as exc:  # register must never break gateway load
         print(f"[talaria] artifact mirror registration skipped: {exc}")
     try:
+        # #363: the startup sweep — every gateway boot settles retention
+        # even if no artifact is ever appended again. maybe_sweep never
+        # raises and stamps the throttle, so the first mirror append after
+        # boot does not immediately re-sweep.
+        from . import hygiene
+        hygiene.maybe_sweep()
+    except Exception as exc:  # register must never break gateway load
+        print(f"[talaria] hygiene sweep skipped: {exc}")
+    try:
         from .platform_adapter import TalariaPlatformAdapter
         ctx.register_platform(
             name="talaria",

@@ -19,6 +19,14 @@ def setup_cli(subparser) -> None:
         "device_id", nargs="?", default=None,
         help="Device id from `hermes talaria status` (omit to deactivate all)",
     )
+    prune = subs.add_parser(
+        "prune",
+        help="Scrub/expire artifact outbox rows past the 7-day retention (rows are kept, never deleted)",
+    )
+    prune.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Report what the sweep would touch without writing anything",
+    )
     send = subs.add_parser("send", help="Queue a message for a specific active Talaria device")
     send.add_argument("text", nargs="*", help="Message text to queue for the device")
     target = send.add_mutually_exclusive_group()
@@ -50,6 +58,18 @@ def handle_cli(args) -> int:
             return 0
         print("No matching active device record.")
         return 1
+    elif cmd == "prune":
+        from . import hygiene
+        dry_run = bool(getattr(args, "dry_run", False))
+        counts = hygiene.sweep(dry_run=dry_run)
+        verb = "Would scrub" if dry_run else "Scrubbed"
+        print(
+            f"{verb} {counts['scrubbed']} delivered and "
+            f"{'would expire' if dry_run else 'expired'} {counts['expired']} undelivered "
+            f"artifact row(s) past {hygiene.RETENTION_DAYS:g}-day retention. "
+            "Rows are kept, never deleted."
+        )
+        return 0
     elif cmd == "send":
         from . import outbox
         text = " ".join(getattr(args, "text", []) or []).strip()
