@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -79,11 +80,10 @@ def _gateway_events_url() -> str:
     return f"http://127.0.0.1:{port}/api/platforms/talaria/events"
 
 
-def probe_gateway_adapter(url: str | None = None) -> dict:
+def _probe_once(target: str) -> dict:
     """Unauthenticated POST to the gateway's events route. Side-effect-free:
     auth rejection precedes verb dispatch, so a registered adapter answers
     401 without draining or acking anything."""
-    target = url or _gateway_events_url()
     request = urllib.request.Request(
         target,
         data=b"{}",
@@ -98,6 +98,37 @@ def probe_gateway_adapter(url: str | None = None) -> dict:
     except (urllib.error.URLError, OSError, TimeoutError):
         return {"observation": "unreachable", "status": None, "url": target}
     return {"observation": classify_probe_status(status), "status": status, "url": target}
+
+
+# #362 3D-F: the pane polls /status every 5 s, and every uncached poll fired
+# one probe POST — ~17k access-log 401 lines/day in the gateway's agent.log,
+# drowning any GENUINE auth failure on the same route. Verdicts (401 live /
+# 503 absent) hold for 60 s; non-verdicts (unreachable, indeterminate) retry
+# after 10 s so a recovered gateway isn't reported down for a minute. Keyed
+# per URL; a racing double-probe under the FastAPI threadpool is harmless
+# (both writes store an equally fresh result), so there is no lock.
+_PROBE_CACHE_OK_SECONDS = 60.0
+_PROBE_CACHE_FAIL_SECONDS = 10.0
+_PROBE_VERDICTS = frozenset({"live", "absent"})
+_probe_cache: dict[str, tuple[float, dict]] = {}
+
+
+def probe_gateway_adapter(url: str | None = None, *, now=time.monotonic) -> dict:
+    target = url or _gateway_events_url()
+    stamp = now()
+    cached = _probe_cache.get(target)
+    if cached is not None:
+        cached_at, cached_result = cached
+        floor = (
+            _PROBE_CACHE_OK_SECONDS
+            if cached_result.get("observation") in _PROBE_VERDICTS
+            else _PROBE_CACHE_FAIL_SECONDS
+        )
+        if stamp - cached_at < floor:
+            return cached_result
+    result = _probe_once(target)
+    _probe_cache[target] = (stamp, result)
+    return result
 
 
 @router.get("/status")
