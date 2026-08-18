@@ -123,12 +123,47 @@ def test_zero_active_devices_fails_closed_silently(monkeypatch, tmp_path):
     assert wakes == []
 
 
-def test_multiple_active_devices_fails_closed_silently(monkeypatch, tmp_path):
+def test_multiple_active_devices_each_get_their_own_row(monkeypatch, tmp_path):
+    # #366 design correction (2026-08-18): the v0 exactly-one gate silently
+    # dropped every artifact on a two-device host (OJAMD: iPhone + iPad,
+    # measured — zero outbox rows across two live write turns). Multi-device
+    # hosts are first-class now: one independently-acknowledged targeted row
+    # per active device, one wake each.
     phone_id, wakes = _arm(monkeypatch, tmp_path)
-    store.create_paired_device("ipad-install", "ipad")
+    ipad_id, _ = store.create_paired_device("ipad-install", "ipad")
     _fire()  # must not raise
+    [phone_row] = outbox.pending(phone_id)
+    [ipad_row] = outbox.pending(ipad_id)
+    assert phone_row["kind"] == ipad_row["kind"] == "artifact"
+    assert phone_row["text"] == ipad_row["text"] == "abc"
+    assert phone_row["meta"]["path"] == ipad_row["meta"]["path"] == "notes/a.txt"
+    assert phone_row["id"] != ipad_row["id"]
+    assert sorted(wakes) == sorted([phone_id, ipad_id])
+
+
+def test_multi_device_rows_acknowledge_independently(monkeypatch, tmp_path):
+    # Acking one device's copy must not consume the other's — the rows are
+    # separate targeted items, not one shared row.
+    phone_id, _ = _arm(monkeypatch, tmp_path)
+    ipad_id, _ = store.create_paired_device("ipad-install", "ipad")
+    _fire()
+    [phone_row] = outbox.pending(phone_id)
+    outbox.mark_delivered([phone_row["id"]], device_id=phone_id)
     assert outbox.pending(phone_id) == []
-    assert wakes == []
+    assert len(outbox.pending(ipad_id)) == 1
+
+
+def test_handler_never_raises_on_fanout(monkeypatch, tmp_path):
+    # The multi-device append is the new storage seam — a raise there must
+    # be swallowed like every other.
+    _arm(monkeypatch, tmp_path)
+    store.create_paired_device("ipad-install", "ipad")
+    monkeypatch.setattr(
+        artifact_mirror.outbox,
+        "append_for_devices",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("storage down")),
+    )
+    assert _fire() is None
 
 
 def test_handler_never_raises(monkeypatch, tmp_path):

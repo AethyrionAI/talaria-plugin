@@ -13,8 +13,10 @@ Two contracts, both pinned by tests:
 - **Fail-closed.** No row unless every gate passes: a write tool, a
   non-empty session_id, an API-plane turn (the phone's plane — CLI,
   Discord and desktop turns must not queue their files at the phone), a
-  parseable ``{path, content}``, and exactly one active device (the same
-  untargeted-send rule the CLI follows).
+  parseable ``{path, content}``, and at least one active device. Each
+  active device gets its own independently acknowledged targeted row
+  (#366 — the v0 exactly-one gate silently dropped every artifact on a
+  two-device host, measured on OJAMD 2026-08-18).
 - **Never raise, never block.** The hook runs synchronously on the tool
   dispatch hot path. Local SQLite append only; any exception is swallowed
   to a debug log line. The gateway would swallow a raise anyway, but this
@@ -55,9 +57,8 @@ def _api_plane() -> bool:
         return False
 
 
-def _single_active_device() -> dict | None:
-    active = store.active_devices()
-    return active[0] if len(active) == 1 else None
+def _active_device_ids() -> list[str]:
+    return [device["id"] for device in store.active_devices()]
 
 
 def _on_pre_tool_call(
@@ -78,11 +79,12 @@ def _on_pre_tool_call(
         content = args.get("content")
         if not path or not isinstance(content, str):
             return None
-        device = _single_active_device()
-        if device is None:
+        device_ids = _active_device_ids()
+        if not device_ids:
             return None
-        outbox.append(
+        outbox.append_for_devices(
             content,
+            device_ids,
             meta={
                 "session_id": session_id,
                 "turn_id": turn_id,
@@ -91,10 +93,10 @@ def _on_pre_tool_call(
                 "ts": _utc_now_iso(),
                 "type": "written_file",
             },
-            target_device_id=device["id"],
             kind="artifact",
         )
-        HUB.wake(device["id"])
+        for device_id in device_ids:
+            HUB.wake(device_id)
         # #363: the growth source pays for its own hygiene — throttled to
         # one sweep per 6 h, and maybe_sweep itself never raises.
         hygiene.maybe_sweep()
