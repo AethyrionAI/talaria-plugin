@@ -191,7 +191,10 @@ class EnvelopeService:
         bootstrap = voice.normalize_bootstrap(
             session_payload, model, voice.DEFAULT_REALTIME_VOICE
         )
-        voice_session_id = uuid.uuid4().hex
+        # DASHED, not .hex: the app decodes this into a Swift `UUID`, whose
+        # `UUID(uuidString:)` rejects an undashed 32-char string. A hex id
+        # would fail to decode on a shipped client that cannot be changed.
+        voice_session_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
         self._voice_sessions[voice_session_id] = started_at
         # The app's decode target is frozen by a shipped client, so this shape
