@@ -241,3 +241,133 @@ async def test_the_five_original_verbs_are_untouched(env):
     unknown = await service.dispatch({"type": "talk_turn_append", "auth": token, "device_id": device_id})
     # Deliberately NOT implemented — and it must say so rather than 500.
     assert unknown["code"] == "unknown_event_type"
+
+
+# -- turn detection (#396-B) -------------------------------------------------
+
+def _clear_voice_env(monkeypatch):
+    for key in (
+        "TALARIA_VOICE_TURN_DETECTION", "TALARIA_VOICE_EAGERNESS",
+        "TALARIA_VOICE_CREATE_RESPONSE", "TALARIA_VOICE_INTERRUPT_RESPONSE",
+        "TALARIA_VOICE_VAD_THRESHOLD", "TALARIA_VOICE_VAD_PREFIX_PADDING_MS",
+        "TALARIA_VOICE_VAD_SILENCE_DURATION_MS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_the_default_block_is_BYTE_IDENTICAL_to_the_literal_383_shipped(monkeypatch, tmp_path):
+    """**396-D, as an assertion rather than a promise.**
+
+    This item restores configurability; it does NOT retune anything. If this
+    test ever has to change, a default moved — and 396-D says that requires a
+    recorded before/after and a session that justifies it.
+    """
+    _clear_voice_env(monkeypatch)
+    assert voice.resolve_turn_detection(tmp_path) == {
+        "type": "semantic_vad",
+        "create_response": True,
+        "interrupt_response": True,
+        "eagerness": "medium",
+    }
+
+
+def test_server_vad_is_REACHABLE_and_brings_its_own_knobs(monkeypatch, tmp_path):
+    """The whole reason this went past config-ification.
+
+    `semantic_vad` has no activation threshold, so the fault Owen actually
+    reported — a television transcribed word for word — is unreachable until
+    this type is selectable.
+    """
+    _clear_voice_env(monkeypatch)
+    monkeypatch.setenv("TALARIA_VOICE_TURN_DETECTION", "server_vad")
+    monkeypatch.setenv("TALARIA_VOICE_VAD_THRESHOLD", "0.8")
+    block = voice.resolve_turn_detection(tmp_path)
+    assert block["type"] == "server_vad"
+    assert block["threshold"] == 0.8
+    assert block["prefix_padding_ms"] == 300
+    assert block["silence_duration_ms"] == 500
+
+
+def test_the_keys_are_TYPE_SCOPED_because_the_wrong_key_is_a_provider_error(monkeypatch, tmp_path):
+    """Sending a type the other type's keys fails the mint, which on this path
+    means a user who cannot start a voice session at all."""
+    _clear_voice_env(monkeypatch)
+    # server_vad values set, but the type left alone: they must be IGNORED,
+    # not smuggled into a semantic_vad block.
+    monkeypatch.setenv("TALARIA_VOICE_VAD_THRESHOLD", "0.9")
+    semantic = voice.resolve_turn_detection(tmp_path)
+    assert "threshold" not in semantic
+    assert semantic["eagerness"] == "medium"
+
+    monkeypatch.setenv("TALARIA_VOICE_TURN_DETECTION", "server_vad")
+    monkeypatch.setenv("TALARIA_VOICE_EAGERNESS", "low")
+    server = voice.resolve_turn_detection(tmp_path)
+    assert "eagerness" not in server
+
+
+def test_a_BAD_value_falls_back_LOUDLY_instead_of_taking_voice_down(monkeypatch, tmp_path):
+    """A typo must not be able to break the bootstrap.
+
+    This module sits on the start path: raising here is a user with no voice
+    session, which is strictly worse than a user whose typo was ignored.
+    """
+    _clear_voice_env(monkeypatch)
+    monkeypatch.setenv("TALARIA_VOICE_TURN_DETECTION", "sematic_vad")   # typo
+    monkeypatch.setenv("TALARIA_VOICE_EAGERNESS", "very")               # not a level
+    monkeypatch.setenv("TALARIA_VOICE_CREATE_RESPONSE", "sure")         # not a bool
+    block = voice.resolve_turn_detection(tmp_path)
+    assert block == {
+        "type": "semantic_vad",
+        "create_response": True,
+        "interrupt_response": True,
+        "eagerness": "medium",
+    }
+
+    # Out-of-range is refused the same way as unparseable.
+    monkeypatch.setenv("TALARIA_VOICE_TURN_DETECTION", "server_vad")
+    monkeypatch.setenv("TALARIA_VOICE_VAD_THRESHOLD", "7")              # > 1.0
+    assert voice.resolve_turn_detection(tmp_path)["threshold"] == 0.5
+
+
+def test_settings_come_from_the_env_FILE_too_not_only_the_environment(monkeypatch, tmp_path):
+    """Same precedence and the same two sources as the API key — one place to
+    look for anything this module reads."""
+    _clear_voice_env(monkeypatch)
+    (tmp_path / ".env").write_text(
+        'TALARIA_VOICE_EAGERNESS="low"\nTALARIA_VOICE_INTERRUPT_RESPONSE=false\n',
+        encoding="utf-8",
+    )
+    block = voice.resolve_turn_detection(tmp_path)
+    assert block["eagerness"] == "low"
+    assert block["interrupt_response"] is False
+
+    monkeypatch.setenv("TALARIA_VOICE_EAGERNESS", "high")
+    assert voice.resolve_turn_detection(tmp_path)["eagerness"] == "high"
+
+
+def test_the_minted_session_CARRIES_the_resolved_block(monkeypatch):
+    """The resolver existing is not the same as the session using it."""
+    captured = {}
+
+    def poster(url, headers=None, json=None, timeout=None):
+        captured.update(json)
+        return _Response(200, {"value": "ek", "expires_at": 1, "session": {}})
+
+    voice.create_realtime_session(
+        api_key=FAKE_OPENAI_KEY, instructions="x", poster=poster,
+        turn_detection={"type": "server_vad", "threshold": 0.72},
+    )
+    assert captured["session"]["audio"]["input"]["turn_detection"] == {
+        "type": "server_vad", "threshold": 0.72,
+    }
+
+
+def test_readiness_REPORTS_the_effective_turn_detection(monkeypatch, tmp_path):
+    """396-D's spirit: a value nobody can read is one nobody can notice has
+    moved. Additive — the shipped Swift client ignores unknown keys."""
+    _clear_voice_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_OPENAI_KEY)
+    monkeypatch.setenv("TALARIA_VOICE_EAGERNESS", "low")
+    state = voice.readiness(tmp_path)
+    assert state["turnDetection"]["eagerness"] == "low"
+    assert state["turnDetection"]["type"] == "semantic_vad"

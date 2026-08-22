@@ -105,6 +105,160 @@ def _read_text_file(path: Path, *, max_chars: int) -> str:
     return text if len(text) <= max_chars else text[:max_chars].rstrip() + "\n…(truncated)"
 
 
+# -- turn detection (#396-B) -------------------------------------------------
+#
+# #383 ported the connector's turn-detection VALUES as a literal and dropped
+# its CONFIGURABILITY along the way — the connector carried
+# `RealtimeTalkConfig.turn_detection_type / create_response /
+# interrupt_response` as settings. Nobody asked for that loss; it was simply
+# not part of the port. This restores it.
+#
+# **No default moves here (#396-D).** The dict this builds with an empty
+# environment is byte-identical to the literal #383 shipped: semantic_vad,
+# eagerness medium, create_response and interrupt_response both true. This
+# commit makes the knobs REACHABLE; turning one is a separate decision that
+# has to record its before/after.
+#
+# **Why `server_vad` had to become reachable at all**, rather than just
+# lifting the literal into a constant: Owen's 2026-08-22 characterisation
+# confirmed two faults with two different mechanisms. `semantic_vad` has NO
+# activation threshold — it takes an `eagerness`, which governs how quickly
+# the model decides the USER has finished, and so addresses the mutual
+# cut-offs and nothing else. The threshold that governs what OPENS a turn
+# (room noise, a television) belongs to `server_vad`, which #383 made
+# unreachable by fixing the type. Config-ifying without this would have
+# shipped configurability that cannot reach the confirmed complaint.
+
+TURN_DETECTION_TYPES = ("semantic_vad", "server_vad")
+SEMANTIC_VAD_EAGERNESS = ("low", "medium", "high", "auto")
+
+DEFAULT_TURN_DETECTION_TYPE = "semantic_vad"
+DEFAULT_SEMANTIC_EAGERNESS = "medium"
+DEFAULT_CREATE_RESPONSE = True
+DEFAULT_INTERRUPT_RESPONSE = True
+# server_vad's own defaults, applied only when that type is selected. These
+# are the provider's documented defaults, restated so a host that selects
+# server_vad without tuning gets the provider's behaviour rather than ours.
+DEFAULT_VAD_THRESHOLD = 0.5
+DEFAULT_VAD_PREFIX_PADDING_MS = 300
+DEFAULT_VAD_SILENCE_DURATION_MS = 500
+
+
+def _resolve_setting(key: str, hermes_home: Path | None = None) -> str | None:
+    """One voice setting: environment first, then HERMES_HOME's `.env`.
+
+    Same precedence and the same two sources as `resolve_openai_api_key`, on
+    purpose — one place to look for anything this module reads.
+    """
+    value = (os.environ.get(key) or "").strip()
+    if value:
+        return value
+    home = hermes_home or resolve_hermes_home()
+    return _read_env_file_value(home / ".env", key)
+
+
+def _coerce_bool(raw: str | None, default: bool, *, key: str) -> bool:
+    if raw is None:
+        return default
+    lowered = raw.strip().lower()
+    if lowered in ("1", "true", "yes", "on"):
+        return True
+    if lowered in ("0", "false", "no", "off"):
+        return False
+    _logger.warning("talaria voice: %s=%r is not a boolean — using %r", key, raw, default)
+    return default
+
+
+def _coerce_number(raw: str | None, default, *, key: str, cast, low, high):
+    """Numeric setting with a RANGE, falling back loudly rather than raising.
+
+    **A fat-fingered threshold must not take voice down.** This module sits on
+    the bootstrap path: an exception here is a user who cannot start a voice
+    session, which is strictly worse than a user whose typo was ignored. So
+    every bad value logs and falls back — and the log is the only way anyone
+    finds out, which is why it is WARNING rather than debug.
+    """
+    if raw is None:
+        return default
+    try:
+        value = cast(raw)
+    except (TypeError, ValueError):
+        _logger.warning("talaria voice: %s=%r is not a number — using %r", key, raw, default)
+        return default
+    if not (low <= value <= high):
+        _logger.warning(
+            "talaria voice: %s=%r is outside [%s, %s] — using %r", key, raw, low, high, default
+        )
+        return default
+    return value
+
+
+def resolve_turn_detection(hermes_home: Path | None = None) -> dict:
+    """Build the session's `turn_detection` block from host configuration.
+
+    **The keys are TYPE-SCOPED and that is not tidiness.** `eagerness` belongs
+    to `semantic_vad` and `threshold`/`prefix_padding_ms`/`silence_duration_ms`
+    belong to `server_vad`; sending one type the other's keys is a provider
+    error, which on this path means a failed bootstrap. So the emitted dict
+    carries only the keys valid for the selected type, and a host that has
+    tuned server_vad values but left the type at semantic_vad simply gets
+    semantic_vad — its knobs ignored, not smuggled through.
+    """
+    home = hermes_home or resolve_hermes_home()
+
+    raw_type = _resolve_setting("TALARIA_VOICE_TURN_DETECTION", home)
+    detection_type = (raw_type or DEFAULT_TURN_DETECTION_TYPE).strip().lower()
+    if detection_type not in TURN_DETECTION_TYPES:
+        _logger.warning(
+            "talaria voice: TALARIA_VOICE_TURN_DETECTION=%r is not one of %s — using %r",
+            raw_type, ", ".join(TURN_DETECTION_TYPES), DEFAULT_TURN_DETECTION_TYPE,
+        )
+        detection_type = DEFAULT_TURN_DETECTION_TYPE
+
+    block: dict = {
+        "type": detection_type,
+        "create_response": _coerce_bool(
+            _resolve_setting("TALARIA_VOICE_CREATE_RESPONSE", home),
+            DEFAULT_CREATE_RESPONSE,
+            key="TALARIA_VOICE_CREATE_RESPONSE",
+        ),
+        "interrupt_response": _coerce_bool(
+            _resolve_setting("TALARIA_VOICE_INTERRUPT_RESPONSE", home),
+            DEFAULT_INTERRUPT_RESPONSE,
+            key="TALARIA_VOICE_INTERRUPT_RESPONSE",
+        ),
+    }
+
+    if detection_type == "semantic_vad":
+        raw_eagerness = _resolve_setting("TALARIA_VOICE_EAGERNESS", home)
+        eagerness = (raw_eagerness or DEFAULT_SEMANTIC_EAGERNESS).strip().lower()
+        if eagerness not in SEMANTIC_VAD_EAGERNESS:
+            _logger.warning(
+                "talaria voice: TALARIA_VOICE_EAGERNESS=%r is not one of %s — using %r",
+                raw_eagerness, ", ".join(SEMANTIC_VAD_EAGERNESS), DEFAULT_SEMANTIC_EAGERNESS,
+            )
+            eagerness = DEFAULT_SEMANTIC_EAGERNESS
+        block["eagerness"] = eagerness
+        return block
+
+    block["threshold"] = _coerce_number(
+        _resolve_setting("TALARIA_VOICE_VAD_THRESHOLD", home),
+        DEFAULT_VAD_THRESHOLD,
+        key="TALARIA_VOICE_VAD_THRESHOLD", cast=float, low=0.0, high=1.0,
+    )
+    block["prefix_padding_ms"] = _coerce_number(
+        _resolve_setting("TALARIA_VOICE_VAD_PREFIX_PADDING_MS", home),
+        DEFAULT_VAD_PREFIX_PADDING_MS,
+        key="TALARIA_VOICE_VAD_PREFIX_PADDING_MS", cast=int, low=0, high=5000,
+    )
+    block["silence_duration_ms"] = _coerce_number(
+        _resolve_setting("TALARIA_VOICE_VAD_SILENCE_DURATION_MS", home),
+        DEFAULT_VAD_SILENCE_DURATION_MS,
+        key="TALARIA_VOICE_VAD_SILENCE_DURATION_MS", cast=int, low=0, high=10000,
+    )
+    return block
+
+
 # -- the voice system prompt -------------------------------------------------
 
 _VOICE_STYLE = (
@@ -206,6 +360,12 @@ def readiness(hermes_home: Path | None = None) -> dict:
         "selectedModel": DEFAULT_REALTIME_MODELS[0],
         "voice": DEFAULT_REALTIME_VOICE,
         "voiceContextUpdatedAt": datetime.now(timezone.utc).isoformat(),
+        # #396-B: the EFFECTIVE turn detection, so the configuration is
+        # observable instead of having to be inferred from behaviour. 396-D
+        # forbids a silent default change; a value nobody can read is one
+        # nobody can notice has moved. Additive — the shipped Swift client
+        # decodes a fixed field set and ignores unknown keys.
+        "turnDetection": resolve_turn_detection(home),
     }
 
 
@@ -228,6 +388,7 @@ def create_realtime_session(
     instructions: str,
     voice: str = DEFAULT_REALTIME_VOICE,
     models: list[str] | None = None,
+    turn_detection: dict | None = None,
     poster=None,
 ) -> tuple[dict, str]:
     """Mint an ephemeral realtime client secret. Returns (payload, model).
@@ -243,6 +404,11 @@ def create_realtime_session(
     it is the one thing given a seam.
     """
     post = poster or httpx.post
+    # #396-B: resolved once, OUTSIDE the model-fallback loop. Resolving per
+    # attempt would re-read the environment mid-bootstrap and could hand two
+    # models two different configurations, which is the kind of difference
+    # nobody would think to look for when a session behaves oddly.
+    turn_detection = turn_detection or resolve_turn_detection()
     last_error: str | None = None
     for model in (models or DEFAULT_REALTIME_MODELS):
         session_definition = {
@@ -252,12 +418,7 @@ def create_realtime_session(
             "audio": {
                 "output": {"voice": voice or DEFAULT_REALTIME_VOICE},
                 "input": {
-                    "turn_detection": {
-                        "type": "semantic_vad",
-                        "eagerness": "medium",
-                        "create_response": True,
-                        "interrupt_response": True,
-                    },
+                    "turn_detection": turn_detection,
                     "transcription": {"model": "gpt-4o-mini-transcribe"},
                 },
             },
