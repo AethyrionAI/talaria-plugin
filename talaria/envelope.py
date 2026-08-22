@@ -24,6 +24,8 @@ import asyncio
 import hmac
 import logging
 import time
+import uuid
+from datetime import datetime, timezone
 
 _logger = logging.getLogger("talaria")
 
@@ -67,6 +69,11 @@ class EnvelopeService:
         self._hold = hold_seconds
         self._touch_throttle = touch_throttle_seconds
         self._last_store_touch: dict[str, float] = {}
+        # #383: in-process only, and deliberately so — a voice session is
+        # meaningful for the minutes it is live, and the ephemeral secret
+        # the phone holds expires on its own. Persisting it would build a
+        # store whose only reader is its own cleanup.
+        self._voice_sessions: dict[str, str] = {}
 
     # -- route-level authentication ---------------------------------------
     def verify(self, auth_header: str) -> tuple[bool, str]:
@@ -117,6 +124,13 @@ class EnvelopeService:
             "ack": self._ack,
             "query_result": self._query_result,
             "unpair": self._unpair,
+            # #383: the realtime voice bootstrap, re-homed off the retired
+            # relay/connector pair. Additive — the five verbs above are
+            # untouched, so a half-deployed plugin still serves chat and
+            # sensors normally.
+            "talk_readiness": self._talk_readiness,
+            "talk_session_create": self._talk_session_create,
+            "talk_session_end": self._talk_session_end,
         }.get(event_type) if isinstance(event_type, str) else None
         if handler is None:
             return {"error": "Unknown event type", "code": "unknown_event_type"}
@@ -128,6 +142,87 @@ class EnvelopeService:
             # than assumed of every storage call.
             _logger.exception("talaria: %s handler failed on a storage error", event_type)
             return {"error": "Internal storage failure", "code": "storage_error"}
+
+    # -- #383: realtime voice ------------------------------------------------
+    #
+    # `talk_turn_append` is deliberately ABSENT. Investigated 2026-08-22: the
+    # app never reads voice turns back (the POST had no GET), #1's
+    # `postVoiceTranscriptsToHermes` already posts transcripts as normal
+    # Sessions-API turns, and the relay verb bypassed the user's own
+    # "post voice transcripts" setting. Porting it would rebuild a
+    # toggle-bypassing transcript path on purpose. Owen's call; not built.
+
+    async def _talk_readiness(self, payload: dict) -> dict:
+        device = await self._device_authorized(payload)
+        if device is None:
+            return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
+        from . import voice
+        return await asyncio.to_thread(voice.readiness)
+
+    async def _talk_session_create(self, payload: dict) -> dict:
+        device = await self._device_authorized(payload)
+        if device is None:
+            return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
+        from . import voice
+
+        api_key = await asyncio.to_thread(voice.resolve_openai_api_key)
+        if not api_key:
+            # A clean, NAMED refusal rather than a 500: the app surfaces
+            # `blockedReason` to the user, and "not configured" is a state a
+            # user can act on (#180 — degrade honestly, never silently).
+            return {
+                "error": "OpenAI Realtime is not configured on this Hermes host.",
+                "code": "talk_not_configured",
+            }
+
+        instructions = await asyncio.to_thread(voice.build_voice_instructions)
+        try:
+            session_payload, model = await asyncio.to_thread(
+                voice.create_realtime_session,
+                api_key=api_key,
+                instructions=instructions,
+            )
+        except RuntimeError as error:
+            # Every candidate model refused. The message is the provider's own
+            # and is worth forwarding — a bare "failed" here is what makes a
+            # voice bootstrap undebuggable from the phone.
+            return {"error": str(error), "code": "talk_session_create_failed"}
+
+        bootstrap = voice.normalize_bootstrap(
+            session_payload, model, voice.DEFAULT_REALTIME_VOICE
+        )
+        voice_session_id = uuid.uuid4().hex
+        started_at = datetime.now(timezone.utc).isoformat()
+        self._voice_sessions[voice_session_id] = started_at
+        # The app's decode target is frozen by a shipped client, so this shape
+        # matches the relay's `serialize_voice_session` rather than inventing
+        # a cleaner one.
+        return {
+            "voiceSession": {
+                "id": voice_session_id,
+                "status": "active",
+                "model": bootstrap.get("model"),
+                "voice": bootstrap.get("voice"),
+                "startedAt": started_at,
+                "endedAt": None,
+                "lastError": None,
+            },
+            "bootstrap": bootstrap,
+        }
+
+    async def _talk_session_end(self, payload: dict) -> dict:
+        device = await self._device_authorized(payload)
+        if device is None:
+            return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
+        voice_session_id = _text(payload.get("voice_session_id"))
+        # An end for a session this process does not remember still ACKS.
+        # Two ordinary things produce that: a gateway restart between create
+        # and end, and #383's compensating end for a bootstrap abandoned by
+        # supersession — which by definition raced the record. Refusing here
+        # would turn "clean up after yourself" into an error the app must
+        # then decide to ignore.
+        self._voice_sessions.pop(voice_session_id, None)
+        return {"ended": True, "voiceSessionId": voice_session_id or None}
 
     async def _pair(self, payload: dict) -> dict:
         if not self._is_api_key(payload.get("auth")):
