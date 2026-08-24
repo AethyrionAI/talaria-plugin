@@ -24,10 +24,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install current Hermes and test dependencies
+      - name: Install pinned Hermes and test dependencies
         run: |
           python -m pip install --upgrade pip pytest pytest-asyncio
-          git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /tmp/hermes-agent
+          # Pinned to the SHA named in README's tested-against line
+          # (tests/test_compat_floor.py keeps the two in lockstep).
+          git init -q /tmp/hermes-agent
+          git -C /tmp/hermes-agent fetch --depth 1 https://github.com/NousResearch/hermes-agent.git 503d863fcd2cbfc0be5a6d6c536fae2e98aa4204
+          git -C /tmp/hermes-agent checkout -q --detach FETCH_HEAD
           python -m pip install -e /tmp/hermes-agent
 
       - name: Test through the conventional package layout

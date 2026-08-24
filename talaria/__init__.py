@@ -16,6 +16,12 @@ from . import admin, tools
 
 def register(ctx) -> None:
     try:
+        # #308: warn loudly below the live-verified floor, load anyway.
+        from . import compat
+        compat.check_hermes_floor()
+    except Exception as exc:  # register must never break gateway load
+        print(f"[talaria] hermes version check skipped: {exc}")
+    try:
         from . import database
         database.initialize()
     except Exception as exc:  # register must never break gateway load

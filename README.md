@@ -17,6 +17,8 @@ It does not modify Hermes core and does not open a listener of its own. Inbound
 phone events use `POST /api/platforms/talaria/events` through the gateway's
 existing webhook platform route.
 
+Tested against hermes-agent `503d863fcd2cbfc0be5a6d6c536fae2e98aa4204` (the v0.20.5 line, 2026-08-22); CI pins the same commit, and a repo test keeps this line and the CI pin in lockstep. At load the plugin warns — loudly, without refusing to load — when the running Hermes is older than the oldest live-verified version.
+
 ## Internal installation
 
 Install an immutable commit through Hermes's native plugin installer, then enable

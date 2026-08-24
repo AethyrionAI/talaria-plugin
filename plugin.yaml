@@ -1,5 +1,6 @@
 name: talaria
-version: 0.5.0
+version: 0.6.0
+manifest_version: 1
 description: >
   Transactional Talaria phone bridge for Hermes with a webhook platform
   adapter, device-scoped durable delivery, phone-query tooling, and pairing,
