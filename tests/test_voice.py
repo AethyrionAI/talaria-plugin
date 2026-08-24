@@ -261,14 +261,22 @@ def test_the_default_block_is_BYTE_IDENTICAL_to_the_literal_383_shipped(monkeypa
     This item restores configurability; it does NOT retune anything. If this
     test ever has to change, a default moved — and 396-D says that requires a
     recorded before/after and a session that justifies it.
+
+    **396-P-C extends the same contract to the coarse picker:** "normal" and
+    every unrecognized tuning — junk strings and non-strings included — are
+    the SAME call as no tuning at all. The picker adds reachable presets; it
+    must not be able to move the default.
     """
     _clear_voice_env(monkeypatch)
-    assert voice.resolve_turn_detection(tmp_path) == {
+    literal_383 = {
         "type": "semantic_vad",
         "create_response": True,
         "interrupt_response": True,
         "eagerness": "medium",
     }
+    assert voice.resolve_turn_detection(tmp_path) == literal_383
+    for tuning in (None, "normal", "garbage", 123):
+        assert voice.resolve_turn_detection(tmp_path, tuning=tuning) == literal_383, tuning
 
 
 def test_server_vad_is_REACHABLE_and_brings_its_own_knobs(monkeypatch, tmp_path):
@@ -371,3 +379,103 @@ def test_readiness_REPORTS_the_effective_turn_detection(monkeypatch, tmp_path):
     state = voice.readiness(tmp_path)
     assert state["turnDetection"]["eagerness"] == "low"
     assert state["turnDetection"]["type"] == "semantic_vad"
+
+
+# -- the coarse picker's presets (#396) ---------------------------------------
+
+def test_quiet_and_noisy_are_VETTED_server_vad_blocks_with_EXACTLY_that_types_keys(monkeypatch, tmp_path):
+    """396-P-D (host half): both presets are server_vad — the only type with
+    an activation threshold — and full-dict equality pins the key set along
+    with the vetted values, because a smuggled `eagerness` (or any other
+    wrong-type key) is a provider error that kills the bootstrap."""
+    _clear_voice_env(monkeypatch)
+    vetted = {
+        "quiet": {"threshold": 0.4, "prefix_padding_ms": 300, "silence_duration_ms": 500},
+        "noisy": {"threshold": 0.75, "prefix_padding_ms": 400, "silence_duration_ms": 900},
+    }
+    for tuning, values in vetted.items():
+        assert voice.resolve_turn_detection(tmp_path, tuning=tuning) == {
+            "type": "server_vad",
+            "create_response": True,
+            "interrupt_response": True,
+            **values,
+        }, tuning
+
+
+def test_a_preset_OVERRIDES_the_env_knobs_but_NOT_the_response_flags(monkeypatch, tmp_path):
+    """The vetted values are the point of a preset: a host that has tuned
+    server_vad by hand still gets exactly the quiet block when the phone asks
+    for quiet. The response flags are different — they ride the SAME env
+    resolution the default uses, because create/interrupt behaviour is host
+    policy, not room acoustics."""
+    _clear_voice_env(monkeypatch)
+    monkeypatch.setenv("TALARIA_VOICE_TURN_DETECTION", "semantic_vad")
+    monkeypatch.setenv("TALARIA_VOICE_VAD_THRESHOLD", "0.9")
+    monkeypatch.setenv("TALARIA_VOICE_INTERRUPT_RESPONSE", "false")
+    block = voice.resolve_turn_detection(tmp_path, tuning="quiet")
+    assert block["type"] == "server_vad"
+    assert block["threshold"] == 0.4
+    assert block["create_response"] is True
+    assert block["interrupt_response"] is False
+
+
+def test_readiness_advertises_the_tunings_the_mint_accepts(monkeypatch, tmp_path):
+    """396-P-E (host half): the static capability list is what lets the app
+    render the picker only against a host that understands the field."""
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_OPENAI_KEY)
+    state = voice.readiness(tmp_path)
+    assert state["tunings"] == ["quiet", "normal", "noisy"]
+
+
+def _capturing_poster(captured):
+    def poster(url, headers=None, json=None, timeout=None):
+        captured.update(json)
+        return _Response(200, {"value": "ek", "expires_at": 1756000000, "session": {"id": "s"}})
+    return poster
+
+
+async def test_session_create_passes_the_payloads_tuning_to_the_mint(env, monkeypatch):
+    """The preset existing is not the same as the phone being able to select
+    it: a `"tuning": "noisy"` payload must reach the provider request with the
+    noisy block."""
+    service, device_id, token = env
+    _clear_voice_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_OPENAI_KEY)
+    captured = {}
+    monkeypatch.setattr(voice.httpx, "post", _capturing_poster(captured))
+    out = await service.dispatch({
+        "type": "talk_session_create", "auth": token, "device_id": device_id,
+        "tuning": "noisy",
+    })
+    assert out["voiceSession"]["status"] == "active"
+    assert captured["session"]["audio"]["input"]["turn_detection"] == {
+        "type": "server_vad",
+        "create_response": True,
+        "interrupt_response": True,
+        "threshold": 0.75,
+        "prefix_padding_ms": 400,
+        "silence_duration_ms": 900,
+    }
+
+
+async def test_session_create_with_garbage_or_absent_tuning_mints_with_the_DEFAULT(env, monkeypatch):
+    """396-P-C at the envelope: a payload without the field, with a junk
+    string, or with a non-string all mint exactly today's default session —
+    the untrusted field degrades to current behaviour, never to an error."""
+    service, device_id, token = env
+    _clear_voice_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_OPENAI_KEY)
+    captured = {}
+    monkeypatch.setattr(voice.httpx, "post", _capturing_poster(captured))
+    for extra in ({}, {"tuning": "cathedral"}, {"tuning": 123}):
+        captured.clear()
+        out = await service.dispatch({
+            "type": "talk_session_create", "auth": token, "device_id": device_id, **extra,
+        })
+        assert out["voiceSession"]["status"] == "active", extra
+        assert captured["session"]["audio"]["input"]["turn_detection"] == {
+            "type": "semantic_vad",
+            "create_response": True,
+            "interrupt_response": True,
+            "eagerness": "medium",
+        }, extra

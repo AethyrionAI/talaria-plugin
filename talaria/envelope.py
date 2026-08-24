@@ -176,11 +176,21 @@ class EnvelopeService:
             }
 
         instructions = await asyncio.to_thread(voice.build_voice_instructions)
+        # #396: the coarse picker's tuning rides the payload. Like every other
+        # payload field its type is untrusted — the guard here is that
+        # `resolve_turn_detection` is the sanitizer: only the exact vetted
+        # names select a preset, and any junk value (wrong type included)
+        # logs once and yields the env-resolved default, so a malformed field
+        # degrades to today's behaviour rather than an error.
+        turn_detection = await asyncio.to_thread(
+            voice.resolve_turn_detection, tuning=payload.get("tuning")
+        )
         try:
             session_payload, model = await asyncio.to_thread(
                 voice.create_realtime_session,
                 api_key=api_key,
                 instructions=instructions,
+                turn_detection=turn_detection,
             )
         except RuntimeError as error:
             # Every candidate model refused. The message is the provider's own

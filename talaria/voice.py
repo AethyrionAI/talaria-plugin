@@ -143,6 +143,48 @@ DEFAULT_VAD_THRESHOLD = 0.5
 DEFAULT_VAD_PREFIX_PADDING_MS = 300
 DEFAULT_VAD_SILENCE_DURATION_MS = 500
 
+# -- coarse tuning presets (#396's picker, host half) -------------------------
+#
+# Vetted values, host-side so they tune without an app release; quoted in
+# OPEN_ITEMS #396's result block. Both presets are server_vad because that is
+# the only type with an activation threshold (see the #396-B comment above —
+# semantic_vad's eagerness cannot reach the what-OPENS-a-turn fault):
+# "quiet" sits near the provider defaults, a touch more sensitive; "noisy" is
+# markedly less trigger-happy, with a longer silence so a television or room
+# chatter neither opens a turn nor ends one. Higher threshold = needs louder,
+# clearer speech to open a turn.
+#
+# `create_response`/`interrupt_response` are NOT in this table on purpose:
+# they come from the same env resolution the default block uses — they are
+# host policy, not room acoustics.
+VOICE_TUNINGS = ("quiet", "normal", "noisy")
+
+VOICE_TUNING_PRESETS = {
+    "quiet": {"threshold": 0.4, "prefix_padding_ms": 300, "silence_duration_ms": 500},
+    "noisy": {"threshold": 0.75, "prefix_padding_ms": 400, "silence_duration_ms": 900},
+}
+
+
+def _vetted_tuning_preset(tuning) -> dict | None:
+    """Map an UNTRUSTED tuning value to a vetted preset, or None for default.
+
+    The value arrives from an HTTP payload, so its type is not guaranteed.
+    Only the exact strings in VOICE_TUNINGS mean anything: "quiet"/"noisy"
+    select a preset, "normal" (like absence) selects the env-resolved
+    default, and anything else logs one warning and falls to the default —
+    the same fall-back-loudly posture as every other coercion in this module,
+    because a junk field must not be able to take the bootstrap down.
+    """
+    if tuning is None or tuning == "normal":
+        return None
+    if isinstance(tuning, str) and tuning in VOICE_TUNING_PRESETS:
+        return dict(VOICE_TUNING_PRESETS[tuning])
+    _logger.warning(
+        "talaria voice: tuning=%r is not one of %s — using the configured default",
+        tuning, ", ".join(VOICE_TUNINGS),
+    )
+    return None
+
 
 def _resolve_setting(key: str, hermes_home: Path | None = None) -> str | None:
     """One voice setting: environment first, then HERMES_HOME's `.env`.
@@ -193,7 +235,7 @@ def _coerce_number(raw: str | None, default, *, key: str, cast, low, high):
     return value
 
 
-def resolve_turn_detection(hermes_home: Path | None = None) -> dict:
+def resolve_turn_detection(hermes_home: Path | None = None, tuning=None) -> dict:
     """Build the session's `turn_detection` block from host configuration.
 
     **The keys are TYPE-SCOPED and that is not tidiness.** `eagerness` belongs
@@ -203,8 +245,35 @@ def resolve_turn_detection(hermes_home: Path | None = None) -> dict:
     carries only the keys valid for the selected type, and a host that has
     tuned server_vad values but left the type at semantic_vad simply gets
     semantic_vad — its knobs ignored, not smuggled through.
+
+    `tuning` (#396) is the coarse picker's per-session override: "quiet" or
+    "noisy" selects a vetted server_vad preset from VOICE_TUNING_PRESETS
+    (carrying the env-resolved create/interrupt flags); None, "normal", and
+    anything unrecognized yield the env-resolved default, byte-identical to a
+    no-tuning call — 396-D's contract extended: the picker makes presets
+    reachable, it moves no default.
     """
     home = hermes_home or resolve_hermes_home()
+
+    create_response = _coerce_bool(
+        _resolve_setting("TALARIA_VOICE_CREATE_RESPONSE", home),
+        DEFAULT_CREATE_RESPONSE,
+        key="TALARIA_VOICE_CREATE_RESPONSE",
+    )
+    interrupt_response = _coerce_bool(
+        _resolve_setting("TALARIA_VOICE_INTERRUPT_RESPONSE", home),
+        DEFAULT_INTERRUPT_RESPONSE,
+        key="TALARIA_VOICE_INTERRUPT_RESPONSE",
+    )
+
+    preset = _vetted_tuning_preset(tuning)
+    if preset is not None:
+        return {
+            "type": "server_vad",
+            "create_response": create_response,
+            "interrupt_response": interrupt_response,
+            **preset,
+        }
 
     raw_type = _resolve_setting("TALARIA_VOICE_TURN_DETECTION", home)
     detection_type = (raw_type or DEFAULT_TURN_DETECTION_TYPE).strip().lower()
@@ -217,16 +286,8 @@ def resolve_turn_detection(hermes_home: Path | None = None) -> dict:
 
     block: dict = {
         "type": detection_type,
-        "create_response": _coerce_bool(
-            _resolve_setting("TALARIA_VOICE_CREATE_RESPONSE", home),
-            DEFAULT_CREATE_RESPONSE,
-            key="TALARIA_VOICE_CREATE_RESPONSE",
-        ),
-        "interrupt_response": _coerce_bool(
-            _resolve_setting("TALARIA_VOICE_INTERRUPT_RESPONSE", home),
-            DEFAULT_INTERRUPT_RESPONSE,
-            key="TALARIA_VOICE_INTERRUPT_RESPONSE",
-        ),
+        "create_response": create_response,
+        "interrupt_response": interrupt_response,
     }
 
     if detection_type == "semantic_vad":
@@ -366,6 +427,10 @@ def readiness(hermes_home: Path | None = None) -> dict:
         # nobody can notice has moved. Additive — the shipped Swift client
         # decodes a fixed field set and ignores unknown keys.
         "turnDetection": resolve_turn_detection(home),
+        # #396: the coarse tuning names the session mint accepts. Static and
+        # additive — this is the capability signal that lets the app show the
+        # picker only against a host that understands it.
+        "tunings": list(VOICE_TUNINGS),
     }
 
 
