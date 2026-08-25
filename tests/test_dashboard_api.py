@@ -180,7 +180,7 @@ def test_probe_cache_is_keyed_per_url(plugin_api, monkeypatch):
 
 
 def test_plugin_version_reads_the_yaml(plugin_api):
-    assert plugin_api._plugin_version() == "0.6.0"
+    assert plugin_api._plugin_version() == "0.7.0"
 
 
 def test_manifest_name_discipline():

@@ -131,6 +131,9 @@ class EnvelopeService:
             "talk_readiness": self._talk_readiness,
             "talk_session_create": self._talk_session_create,
             "talk_session_end": self._talk_session_end,
+            # #224: persistent approval-mode selection, riding upstream's own
+            # /approvals chokepoint. Additive, same rule as the talk family.
+            "approval_mode": self._approval_mode,
         }.get(event_type) if isinstance(event_type, str) else None
         if handler is None:
             return {"error": "Unknown event type", "code": "unknown_event_type"}
@@ -151,6 +154,38 @@ class EnvelopeService:
     # Sessions-API turns, and the relay verb bypassed the user's own
     # "post voice transcripts" setting. Porting it would rebuild a
     # toggle-bypassing transcript path on purpose. Owen's call; not built.
+
+    # -- #224: persistent approval mode --------------------------------------
+    #
+    # The gateway's /approvals slash command persists ``approvals.mode``
+    # through ``run_approval_mode_command`` (canonical ``set_config_value``,
+    # managed-scope safety, dynamic reload — no restart needed). The runs
+    # plane has no slash pipeline (wire-proven 2026-08-24), so the phone
+    # reaches the SAME chokepoint here instead. Two decisions on record in
+    # the tracker: paired-device auth stands in for the slash gate's admin
+    # check (the threat model is an unlocked phone — App Lock's own model),
+    # and the session-scoped ``/yolo`` bypass is deliberately NOT exposed.
+    async def _approval_mode(self, payload: dict) -> dict:
+        device = await self._device_authorized(payload)
+        if device is None:
+            return {"error": "Token does not authorize this device", "code": "device_auth_mismatch"}
+        mode = payload.get("mode")
+        if mode is not None and not isinstance(mode, str):
+            return {"error": "mode must be a string", "code": "malformed_mode"}
+        try:
+            from hermes_cli.approval_mode import run_approval_mode_command
+        except ImportError:
+            return {
+                "error": "Approval-mode control is unavailable on this host.",
+                "code": "approval_mode_unavailable",
+            }
+        result = await asyncio.to_thread(run_approval_mode_command, mode)
+        return {
+            "ok": result.ok,
+            "mode": result.mode,
+            "changed": result.changed,
+            "message": result.message,
+        }
 
     async def _talk_readiness(self, payload: dict) -> dict:
         device = await self._device_authorized(payload)
