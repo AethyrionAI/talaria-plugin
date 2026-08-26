@@ -1,7 +1,15 @@
-"""Admin CLI for the Talaria plugin: ``hermes talaria pair|status|unpair``.
+"""Admin CLI for the Talaria plugin: ``hermes talaria pair-qr|status|unpair``.
 
-Replaces the legacy venv pairing CLIs. Pairing tokens print exactly once;
-only hashes persist (see store.py).
+Replaces the legacy venv pairing CLIs. Device tokens are minted only by the
+wire ``pair`` verb (the app's own handshake) and only ever persist as
+hashes; see store.py.
+
+**The manual ``pair`` subcommand is gone (#309 Lane D / #412).** It minted a
+device row with no ``install_id``, so nothing could rotate it and the app
+had no redemption path for its token — a flow the Pairing & Devices screen
+advertised and that dead-ended at both ends. ``pair-qr`` replaces it: it
+mints nothing, and hands the phone the gateway credentials the host
+already has.
 """
 
 from __future__ import annotations
@@ -12,7 +20,22 @@ from .database import database_path
 
 def setup_cli(subparser) -> None:
     subs = subparser.add_subparsers(dest="talaria_cmd")
-    subs.add_parser("pair", help="Create a one-time pairing token for the Talaria iOS app")
+    pair_qr = subs.add_parser(
+        "pair-qr",
+        help="Print this host's gateway credentials as a QR for the Talaria iOS app",
+    )
+    pair_qr.add_argument(
+        "--gateway",
+        help="Gateway URL to advertise (default: derived from api_server config + this host's tailnet address)",
+    )
+    pair_qr.add_argument(
+        "--name", help="Host label the app shows for the profile (default: this machine's hostname)",
+    )
+    pair_qr.add_argument("--png", help="Also write the QR to this PNG path")
+    pair_qr.add_argument(
+        "--no-color", dest="no_color", action="store_true",
+        help="Draw with plain half-blocks instead of ANSI colours (for piped output)",
+    )
     subs.add_parser("status", help="Show paired devices and plugin phase state")
     unpair = subs.add_parser("unpair", help="Deactivate a paired device (records are kept, never deleted)")
     unpair.add_argument(
@@ -39,18 +62,8 @@ def setup_cli(subparser) -> None:
 
 def handle_cli(args) -> int:
     cmd = getattr(args, "talaria_cmd", None)
-    if cmd == "pair":
-        device_id, token = store.create_pairing()
-        print(f"Paired device record created: {device_id}")
-        print()
-        print("One-time pairing token (not stored — copy it into the Talaria app now):")
-        print(f"  {token}")
-        print()
-        print("Note: the Talaria app can also pair itself directly against the")
-        print("platform adapter — this command remains the manual fallback path.")
-        print("CLI-paired records do not auto-rotate when the app re-pairs;")
-        print("unpair this id manually if the app later pairs itself.")
-        return 0
+    if cmd == "pair-qr":
+        return _handle_pair_qr(args)
     elif cmd == "unpair":
         count = store.deactivate(getattr(args, "device_id", None))
         if count:
@@ -121,7 +134,7 @@ def handle_cli(args) -> int:
         print("Talaria plugin — tools + admin + webhook platform adapter")
         print(f"Store: {database_path()}")
         if not records:
-            print("No paired devices. Run `hermes talaria pair` to create one.")
+            print("No paired devices. Run `hermes talaria pair-qr` and scan it with the app.")
             _print_transport_counters()
             return 0
         print(f"{len(active)} active / {len(records)} total device record(s):")
@@ -136,6 +149,56 @@ def handle_cli(args) -> int:
             )
         _print_transport_counters()
         return 0
+
+
+def _handle_pair_qr(args) -> int:
+    """Print this host's gateway credentials as a scannable QR.
+
+    Nothing is minted and nothing is stored: the payload carries the
+    ``API_SERVER_KEY`` the gateway already serves and the URL the phone
+    should reach it at. The key is printed only INSIDE the QR — the prose
+    around it is masked, and this path writes no log record at all, so the
+    credential cannot survive in a log the way a printed token would.
+    """
+    from . import pairing_qr
+
+    try:
+        gateway_url, provenance = pairing_qr.resolve_gateway_url(getattr(args, "gateway", None))
+        name = pairing_qr.resolve_host_name(getattr(args, "name", None))
+        api_key = pairing_qr.resolve_api_key()
+        payload = pairing_qr.build_payload(gateway_url=gateway_url, api_key=api_key, name=name)
+        text = pairing_qr.encode_payload(payload)
+        art = pairing_qr.render_ansi(text, color=not getattr(args, "no_color", False))
+    except pairing_qr.PairingQRError as exc:
+        print(f"Cannot build a pairing QR: {exc}")
+        return 1
+
+    png_path = getattr(args, "png", None)
+    written = None
+    if png_path:
+        try:
+            written = pairing_qr.write_png(text, png_path)
+        except pairing_qr.PairingQRError as exc:
+            print(f"Cannot write the PNG: {exc}. Nothing was written.")
+            return 1
+        except OSError as exc:
+            print(f"Cannot write the PNG: {exc}. Nothing was written.")
+            return 1
+
+    print("Scan this with the Talaria app (Settings → Connect Host):")
+    print()
+    print(art)
+    print()
+    print(f"  gateway  {gateway_url}   [{provenance}]")
+    print(f"  name     {name}")
+    print(f"  key      {pairing_qr.mask_key(api_key)}   [read at print time, not stored]")
+    if written is not None:
+        print(f"  png      {written}")
+    print()
+    print("The QR carries this host's API_SERVER_KEY. Treat it like the key")
+    print("itself: do not photograph it for anyone else, and rotate the key in")
+    print("HERMES_HOME's .env (then restart the gateway) if it leaks.")
+    return 0
 
 
 def _print_transport_counters() -> None:
@@ -166,7 +229,7 @@ def _print_transport_counters() -> None:
 def register_cli(ctx) -> None:
     ctx.register_cli_command(
         name="talaria",
-        help="Talaria phone bridge admin (pair, status, unpair, send)",
+        help="Talaria phone bridge admin (pair-qr, status, unpair, send)",
         setup_fn=setup_cli,
         handler_fn=handle_cli,
         description="Pairing and status admin for the Talaria iOS app's Hermes bridge.",
