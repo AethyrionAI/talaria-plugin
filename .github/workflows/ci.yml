@@ -27,6 +27,12 @@ jobs:
       - name: Install pinned Hermes and test dependencies
         run: |
           python -m pip install --upgrade pip pytest pytest-asyncio
+          # `qrcode` backs `hermes talaria pair-qr`. It is NOT a Hermes core
+          # dependency — it ships only with the `messaging`, `dingtalk`, and
+          # `feishu` extras — so `pip install -e hermes-agent` below does not
+          # bring it. Pinned to Hermes's own pin so CI cannot drift from the
+          # version a host installed with those extras already has.
+          python -m pip install 'qrcode==7.4.2'
           # Pinned to the SHA named in README's tested-against line
           # (tests/test_compat_floor.py keeps the two in lockstep).
           git init -q /tmp/hermes-agent

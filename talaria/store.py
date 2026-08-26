@@ -52,27 +52,12 @@ _RELEASE_STALE_CLAIMS = """
 """
 
 
-def create_pairing() -> tuple[str, str]:
-    """Create a manual pairing record and return its one-time plaintext token."""
-    device_id, token, token_sha256 = _new_credentials()
-    connection = connect()
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        connection.execute(
-            """
-            INSERT INTO devices (
-                id, token_sha256, install_id, name, created, active, last_seen, deactivated
-            ) VALUES (?, ?, NULL, NULL, ?, 1, NULL, NULL)
-            """,
-            (device_id, token_sha256, _now_iso()),
-        )
-        connection.commit()
-        return device_id, token
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+# #309 Lane D / #412: `create_pairing()` lived here — the manual mint behind
+# `hermes talaria pair`. It inserted a device row with a NULL `install_id`,
+# which meant `create_paired_device`'s rotation could never find it and the
+# app had no way to redeem the token it printed. Deleted with the subcommand;
+# `create_paired_device` (the wire `pair` verb) is the only mint left, and
+# `pair-qr` covers the operator-at-the-keyboard case it was meant to serve.
 
 
 def devices() -> list[dict]:

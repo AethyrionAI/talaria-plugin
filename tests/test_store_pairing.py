@@ -9,6 +9,18 @@ def _redirect(monkeypatch, tmp_path):
     monkeypatch.setattr(database, "database_path", lambda: tmp_path / "talaria.db")
 
 
+def test_no_install_id_less_mint_survives(monkeypatch, tmp_path):
+    """#309 Lane D / #412: ``create_pairing`` minted a device row with a
+    NULL ``install_id``, so nothing could ever rotate it and the app had no
+    way to redeem its token. The wire ``pair`` verb (``create_paired_device``)
+    is the only mint left. Deleted, not merely unused."""
+    assert not hasattr(store, "create_pairing")
+
+    _redirect(monkeypatch, tmp_path)
+    store.create_paired_device("install-1", "phone")
+    assert all(device.get("install_id") for device in store.active_devices())
+
+
 def test_create_paired_device_persists_hash_not_token(monkeypatch, tmp_path):
     _redirect(monkeypatch, tmp_path)
     device_id, token = store.create_paired_device("install-1", "Owen's iPhone")

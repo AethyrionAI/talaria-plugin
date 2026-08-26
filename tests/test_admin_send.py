@@ -117,7 +117,29 @@ def test_status_prints_device_names(monkeypatch, tmp_path, capsys):
     assert device_id in out
 
 
-def test_cli_pair_warns_about_manual_rows(monkeypatch, tmp_path, capsys):
+def test_the_orphan_manual_pairing_arm_is_gone(monkeypatch, tmp_path, capsys):
+    """#309 Lane D / #412: `hermes talaria pair` minted an install_id-less
+    token that the app had no way to redeem — a flow the Pairing & Devices
+    screen advertised and that dead-ended at both ends. `pair-qr` replaces
+    it. The parser must reject the old verb rather than quietly accept it."""
+    parser = argparse.ArgumentParser()
+    admin.setup_cli(parser)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["pair"])
+
     _redirect(monkeypatch, tmp_path)
-    admin.handle_cli(SimpleNamespace(talaria_cmd="pair"))
-    assert "auto-rotate" in capsys.readouterr().out
+    result = admin.handle_cli(SimpleNamespace(talaria_cmd="pair"))
+    out = capsys.readouterr().out
+    # An unknown verb falls through to status, which must not mint anything.
+    assert result == 0
+    assert "One-time pairing token" not in out
+    assert store.devices() == []
+
+
+def test_status_points_at_pair_qr_when_no_device_is_paired(monkeypatch, tmp_path, capsys):
+    """The empty-store hint named a command that no longer exists."""
+    _redirect(monkeypatch, tmp_path)
+    admin.handle_cli(SimpleNamespace(talaria_cmd="status"))
+    out = capsys.readouterr().out
+    assert "hermes talaria pair-qr" in out
+    assert "hermes talaria pair\n" not in out
