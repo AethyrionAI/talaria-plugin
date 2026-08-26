@@ -108,7 +108,7 @@ function TalariaPane(ctx) {
     if (devices.length === 0) {
       children.push(jsx('div', {
         className: 'text-(--ui-text-tertiary)',
-        children: 'No devices paired yet — run `hermes talaria pair` and scan from the app.'
+        children: 'No devices paired yet — run `hermes talaria pair-qr` and scan it from the app.'
       }))
     }
     for (const device of devices) children.push(deviceRow(device))

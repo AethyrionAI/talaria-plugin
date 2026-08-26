@@ -200,3 +200,18 @@ def test_manifest_name_discipline():
 
     plugin_js = (_DASHBOARD.parent / "desktop-plugin" / "plugin.js").read_text(encoding="utf-8")
     assert "const ID = 'talaria'" in plugin_js
+
+
+def test_no_surface_advertises_the_deleted_pairing_verb():
+    """#309 Lane D / #412: three surfaces told the operator to run a command
+    that no longer exists — the CLI's own empty-store hint, the README, and
+    the Electron pane's empty state. The pane has no Python importer, so it
+    is pinned by string match exactly as the id above is."""
+    root = _DASHBOARD.parent
+    for relative in ("desktop-plugin/plugin.js", "README.md"):
+        text = (root / relative).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "removed in 0.8.0" in line or "manual `hermes talaria pair`" in line:
+                continue          # the deprecation note may NAME the dead verb
+            assert "hermes talaria pair`" not in line, f"{relative}: {line}"
+            assert "hermes talaria pair " not in line, f"{relative}: {line}"
