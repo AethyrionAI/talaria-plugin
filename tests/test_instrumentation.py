@@ -114,6 +114,51 @@ async def test_module_load_stamp_names_the_hub_instance():
     assert "id(HUB)" in text
 
 
+def _reexecute_transport_module():
+    """Run ``transport.py`` top-to-bottom in a throwaway module object.
+
+    The real stamp fires at interpreter import, long before any test runs, so
+    the only way to CAPTURE the record (rather than grep the source that emits
+    it) is to execute the module again. The probe module is deliberately never
+    registered in ``sys.modules``: it must not become the second ``transport``
+    that #263(a) is about.
+    """
+    import importlib.util
+
+    from talaria import transport
+
+    source = transport.__file__
+    assert source
+    spec = importlib.util.spec_from_file_location("talaria._pid_stamp_probe", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_module_load_stamp_carries_the_pid(caplog):
+    """#263 WATCH, the 2026-08-06 22:49 breadcrumb: a SECOND ``transport
+    module loaded`` stamp appeared with different module/hub ids than the boot
+    stamp, and the log could not say whether that was a second PROCESS writing
+    its own log (benign) or a same-process re-execution (the split shape,
+    live). The PID settles it at a glance — same pid on two stamps is the
+    split; different pids are two processes.
+
+    Captured from the emitted record, not from the source text: a stamp that
+    silently stops carrying the field is exactly what this must catch.
+    """
+    import os
+
+    with caplog.at_level(logging.INFO, logger="talaria"):
+        _reexecute_transport_module()
+
+    stamps = [r.getMessage() for r in caplog.records if "transport module loaded" in r.getMessage()]
+    assert len(stamps) == 1, stamps
+    assert f"pid={os.getpid()}" in stamps[0], (
+        "the module-load stamp must name the process that emitted it — without "
+        "it two loads and two processes are indistinguishable (#263 WATCH)"
+    )
+
+
 def test_status_reports_the_hub_and_says_when_counters_are_process_local(capsys):
     admin._print_transport_counters()
     out = capsys.readouterr().out

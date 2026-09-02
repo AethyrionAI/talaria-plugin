@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 
@@ -303,6 +304,15 @@ HUB = TransportHub()
 # #263-E module-load stamp. Two of these in one process IS the split hub
 # (#263(a)) — printed, not inferred. Zero after a bounce means the plugin
 # never loaded at all.
+#
+# `pid` is what makes "in one process" readable (#263 WATCH, the 2026-08-06
+# 22:49 breadcrumb): a second stamp with different module/hub ids is benign
+# when a second PROCESS wrote it and is the split shape when the SAME process
+# re-executed the module. Without the pid those two are indistinguishable in
+# the log, which is exactly the question that cost an evening.
 logger.info(
-    "transport module loaded module=%s hub=%s", id(__import__("sys").modules.get(__name__)), id(HUB)
+    "transport module loaded pid=%s module=%s hub=%s",
+    os.getpid(),
+    id(__import__("sys").modules.get(__name__)),
+    id(HUB),
 )
