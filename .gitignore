@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Plugin runtime state
+*.db
+*.db-shm
+*.db-wal
+
+# macOS
+.DS_Store
+
+# SDD review scratch (controller-managed)
+.superpowers/

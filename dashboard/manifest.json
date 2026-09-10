@@ -1,0 +1,13 @@
+{
+  "name": "talaria",
+  "label": "Talaria",
+  "description": "Is the Talaria phone bridge actually installed? Plugin status, adapter liveness, and paired devices — read-only.",
+  "icon": "Smartphone",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/talaria",
+    "position": "after:skills",
+    "hidden": true
+  },
+  "api": "plugin_api.py"
+}

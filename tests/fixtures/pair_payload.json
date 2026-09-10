@@ -1,0 +1,6 @@
+{
+  "talaria": 1,
+  "gateway": "http://100.64.0.20:8642",
+  "key": "FIXTURE-API-SERVER-KEY-00000000000000000000000000000000000000000",
+  "name": "my-hermes-host"
+}
